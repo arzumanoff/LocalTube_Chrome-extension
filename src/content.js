@@ -1,0 +1,235 @@
+(function installDownloaderUi() {
+  if (window.__YTD_UI_INSTALLED__) return;
+  window.__YTD_UI_INSTALLED__ = true;
+
+  const SOURCE = 'ytd-extension';
+  const BUTTON_ID = 'ytd-extension-download-host';
+  const MODAL_ID = 'ytd-extension-modal-host';
+  const TARGETS = [2160, 1440, 1080, 720, 480, 360];
+  const core = globalThis.YTDCore;
+  let metadata = null;
+  let activeJob = null;
+  let lastUrl = location.href;
+  let mountTimer = null;
+
+  function send(message) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (response) => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve(response);
+      });
+    });
+  }
+
+  function supportedPage() {
+    return location.pathname === '/watch' || location.pathname.startsWith('/shorts/');
+  }
+
+  function injectBridge() {
+    if (document.documentElement.dataset.ytdBridgeInjected === 'true') return;
+    document.documentElement.dataset.ytdBridgeInjected = 'true';
+    const metadataScript = document.createElement('script');
+    metadataScript.src = chrome.runtime.getURL('src/core/metadata.js');
+    metadataScript.onload = () => {
+      metadataScript.remove();
+      const bridge = document.createElement('script');
+      bridge.src = chrome.runtime.getURL('src/page-bridge.js');
+      bridge.onload = () => bridge.remove();
+      (document.head || document.documentElement).append(bridge);
+    };
+    (document.head || document.documentElement).append(metadataScript);
+  }
+
+  function requestMetadata() {
+    window.postMessage({ source: SOURCE, type: 'YTD_REQUEST_METADATA' }, location.origin);
+  }
+
+  function findMountTarget() {
+    if (location.pathname.startsWith('/shorts/')) {
+      const active = document.querySelector('ytd-reel-video-renderer[is-active]');
+      return active?.querySelector('#actions, #actions-container') || null;
+    }
+    return document.querySelector(
+      'ytd-watch-metadata #actions-inner, ytd-watch-metadata #actions, #menu-container #top-level-buttons-computed',
+    );
+  }
+
+  function scheduleMount() {
+    if (mountTimer) return;
+    mountTimer = setTimeout(() => {
+      mountTimer = null;
+      mountButton();
+    }, 100);
+  }
+
+  function mountButton() {
+    if (!supportedPage() || document.getElementById(BUTTON_ID)?.isConnected) return;
+    const target = findMountTarget();
+    if (!target) return;
+    const host = document.createElement('span');
+    host.id = BUTTON_ID;
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `<style>:host{display:inline-flex;margin-left:8px}button{border:0;border-radius:999px;padding:10px 17px;background:#ff0033;color:#fff;cursor:pointer;font:600 14px Arial}button:hover{background:#d9002c}</style><button type="button">Скачать</button>`;
+    shadow.querySelector('button').addEventListener('click', openModal);
+    target.append(host);
+  }
+
+  function closeModal() {
+    document.getElementById(MODAL_ID)?.remove();
+  }
+
+  function createModal() {
+    closeModal();
+    const host = document.createElement('div');
+    host.id = MODAL_ID;
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host{all:initial}*{box-sizing:border-box}.overlay{position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.68);font-family:Arial;color:#f5f5f5}.card{width:min(560px,100%);max-height:calc(100vh - 40px);overflow:auto;background:#171717;border:1px solid #343434;border-radius:18px}.head{display:flex;justify-content:space-between;padding:22px 22px 14px}.head h2{margin:0;font-size:22px}.close{width:36px;height:36px;border:0;border-radius:50%;background:#2a2a2a;color:#fff;font-size:22px;cursor:pointer}.body{padding:0 22px 22px}.title{font-weight:700;font-size:16px}.meta{color:#aaa;font-size:13px}.notice{padding:12px 14px;border-radius:12px;background:#242424;color:#cfcfcf;font-size:13px;line-height:1.45}.qualities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.quality{border:1px solid #3d3d3d;border-radius:12px;padding:13px 14px;text-align:left;background:#222;color:#fff;cursor:pointer;font:600 14px Arial}.quality:hover:not(:disabled){border-color:#ff0033}.quality small{display:block;margin-top:4px;color:#aaa;font-weight:400}.quality:disabled{opacity:.38;cursor:not-allowed}.status{margin-top:18px;padding:14px;border-radius:12px;background:#222}.status[hidden]{display:none}.line{display:flex;justify-content:space-between;font-size:13px}.bar{height:8px;margin-top:10px;border-radius:999px;background:#3a3a3a;overflow:hidden}.bar i{display:block;height:100%;width:0;background:#ff0033}.error{margin-top:10px;color:#ff8d9f;font-size:13px}.actions{display:flex;gap:8px;margin-top:12px}.secondary{border:1px solid #555;border-radius:9px;padding:8px 12px;background:transparent;color:#fff;cursor:pointer}@media(max-width:480px){.qualities{grid-template-columns:1fr}}
+      </style>
+      <div class="overlay" role="dialog" aria-modal="true"><section class="card"><div class="head"><h2>Скачать видео</h2><button class="close">×</button></div><div class="body"><p class="title"></p><p class="meta"></p><p class="notice"></p><div class="qualities"></div><div class="status" hidden><div class="line"><span class="state"></span><strong class="percent"></strong></div><div class="bar"><i></i></div><div class="error"></div><div class="actions"></div></div></div></section></div>`;
+    shadow.querySelector('.close').addEventListener('click', closeModal);
+    shadow.querySelector('.overlay').addEventListener('click', (event) => {
+      if (event.target.classList.contains('overlay')) closeModal();
+    });
+    document.documentElement.append(host);
+    return shadow;
+  }
+
+  function jobStateText(state) {
+    return ({ created: 'Готовимся…', downloading: 'Скачивание…', paused: 'Приостановлено', completed: 'Готово — файл сохранён', failed: 'Ошибка скачивания', cancelled: 'Скачивание отменено', recoverable: 'Можно повторить загрузку' })[state] || 'Состояние неизвестно';
+  }
+
+  function addAction(container, label, type, jobId, shadow) {
+    const button = document.createElement('button');
+    button.className = 'secondary';
+    button.textContent = label;
+    button.addEventListener('click', async () => {
+      const response = await send({ type, payload: { jobId } });
+      if (response?.job) renderJob(shadow, response.job);
+      else shadow.querySelector('.error').textContent = response?.message || 'Не удалось выполнить действие.';
+    });
+    container.append(button);
+  }
+
+  function renderJob(shadow, job) {
+    activeJob = job;
+    const status = shadow.querySelector('.status');
+    if (!status) return;
+    status.hidden = false;
+    const total = Number(job.totalBytes || 0);
+    const received = Number(job.bytesReceived || 0);
+    const percent = job.state === 'completed' ? 100 : total ? Math.round(received / total * 100) : 0;
+    shadow.querySelector('.state').textContent = jobStateText(job.state);
+    shadow.querySelector('.percent').textContent = total ? `${Math.max(0, Math.min(100, percent))}%` : '';
+    shadow.querySelector('.bar i').style.width = `${Math.max(0, Math.min(100, percent))}%`;
+    shadow.querySelector('.error').textContent = job.errorCode ? `Код ошибки: ${job.errorCode}` : '';
+    const actions = shadow.querySelector('.actions');
+    actions.replaceChildren();
+    if (['created', 'downloading', 'paused'].includes(job.state)) addAction(actions, 'Отменить', 'YTD_CANCEL_JOB', job.id, shadow);
+    if (['failed', 'recoverable'].includes(job.state)) addAction(actions, 'Повторить', 'YTD_RETRY_JOB', job.id, shadow);
+  }
+
+  async function beginDownload(shadow, targetHeight) {
+    const buttons = [...shadow.querySelectorAll('.quality')];
+    buttons.forEach((button) => { button.disabled = true; });
+    shadow.querySelector('.status').hidden = false;
+    shadow.querySelector('.state').textContent = 'Открываю окно сохранения…';
+    shadow.querySelector('.error').textContent = '';
+    try {
+      const response = await send({ type: 'YTD_START_DOWNLOAD', payload: { metadata, targetHeight } });
+      if (response?.job) renderJob(shadow, response.job);
+      if (!response?.ok) shadow.querySelector('.error').textContent = response?.message || 'Не удалось начать скачивание.';
+    } catch (error) {
+      shadow.querySelector('.state').textContent = 'Ошибка';
+      shadow.querySelector('.error').textContent = error.message;
+    } finally {
+      buttons.forEach((button) => { button.disabled = button.dataset.available !== 'true'; });
+    }
+  }
+
+  function renderModal(shadow) {
+    const qualities = shadow.querySelector('.qualities');
+    qualities.replaceChildren();
+    if (!metadata) {
+      shadow.querySelector('.title').textContent = 'Получаю данные ролика…';
+      shadow.querySelector('.notice').textContent = 'Подождите несколько секунд.';
+      return;
+    }
+    shadow.querySelector('.title').textContent = metadata.title;
+    shadow.querySelector('.meta').textContent = [metadata.channel, metadata.isShort ? 'Shorts' : null].filter(Boolean).join(' · ');
+    const best = core.selectNearestProgressiveMp4(metadata.formats, null);
+    shadow.querySelector('.notice').textContent = best
+      ? 'Скачивается готовый MP4 с H.264 и AAC. Если выбранного качества нет, будет использовано ближайшее ниже.'
+      : 'YouTube не предоставил готовый совместимый MP4. Раздельные дорожки появятся в Phase 2.';
+    const options = [{ targetHeight: null, label: 'Лучшее доступное', available: Boolean(best), resolvedHeight: best?.height, isFallback: false }, ...core.buildQualityOptions(metadata.formats, TARGETS)];
+    for (const option of options) {
+      const button = document.createElement('button');
+      button.className = 'quality';
+      button.dataset.available = String(option.available);
+      button.disabled = !option.available;
+      const detail = !option.available ? 'Нет подходящего формата' : option.targetHeight === null ? `Будет скачано ${option.resolvedHeight}p` : option.isFallback ? `Автоматически: ${option.resolvedHeight}p` : 'Доступно точно';
+      const label = document.createElement('span');
+      label.textContent = option.label;
+      const small = document.createElement('small');
+      small.textContent = detail;
+      button.append(label, small);
+      button.addEventListener('click', () => beginDownload(shadow, option.targetHeight));
+      qualities.append(button);
+    }
+    if (activeJob?.videoId === metadata.videoId) renderJob(shadow, activeJob);
+  }
+
+  async function openModal() {
+    const shadow = createModal();
+    renderModal(shadow);
+    requestMetadata();
+    try {
+      const response = await send({ type: 'YTD_LIST_JOBS' });
+      const latest = response?.jobs?.filter((job) => job.videoId === metadata?.videoId).sort((a, b) => Number(b.createdAt) - Number(a.createdAt))[0];
+      if (latest) renderJob(shadow, latest);
+    } catch { /* Service worker may still be waking up. */ }
+  }
+
+  function navigationChanged() {
+    if (lastUrl === location.href && document.getElementById(BUTTON_ID)) return;
+    lastUrl = location.href;
+    metadata = null;
+    activeJob = null;
+    document.getElementById(BUTTON_ID)?.remove();
+    closeModal();
+    scheduleMount();
+    requestMetadata();
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    if (event.data?.source !== SOURCE || event.data?.type !== 'YTD_PLAYER_METADATA' || !event.data.payload) return;
+    metadata = event.data.payload;
+    scheduleMount();
+    const modal = document.getElementById(MODAL_ID);
+    if (modal?.shadowRoot) renderModal(modal.shadowRoot);
+  });
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== 'YTD_JOB_UPDATED' || !message.payload?.job) return;
+    const job = message.payload.job;
+    if (metadata && job.videoId !== metadata.videoId) return;
+    activeJob = job;
+    const modal = document.getElementById(MODAL_ID);
+    if (modal?.shadowRoot) renderJob(modal.shadowRoot, job);
+  });
+
+  document.addEventListener('yt-navigate-finish', navigationChanged, true);
+  window.addEventListener('popstate', navigationChanged);
+  new MutationObserver(() => {
+    if (lastUrl !== location.href) navigationChanged();
+    else scheduleMount();
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  injectBridge();
+  scheduleMount();
+  setTimeout(requestMetadata, 200);
+  setTimeout(requestMetadata, 1000);
+})();
