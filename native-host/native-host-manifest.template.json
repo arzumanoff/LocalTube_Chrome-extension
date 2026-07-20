@@ -1,0 +1,9 @@
+{
+  "name": "com.arzumanoff.media_engine",
+  "description": "Local media download engine",
+  "path": "__ABSOLUTE_PATH_TO_HOST_EXE__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://cahgieplmdniiggmdiledlbjdbclbhjd/"
+  ]
+}
