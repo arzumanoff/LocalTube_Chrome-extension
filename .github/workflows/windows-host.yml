@@ -93,17 +93,13 @@ jobs:
           Copy-Item 'src\native-content.js' (Join-Path $ExtensionDir 'src\native-content.js') -Force
           Copy-Item 'src\core\native.js' (Join-Path $ExtensionDir 'src\core\native.js') -Force
 
-          $Versions = @(
-            "Package commit: $env:GITHUB_SHA",
-            (& 'native-host\tools\ffmpeg.exe' -version | Select-Object -First 1),
-            (& 'native-host\tools\ffprobe.exe' -version | Select-Object -First 1),
-            (& 'native-host\tools\deno.exe' --version | Select-Object -First 1)
-          )
-          [System.IO.File]::WriteAllLines((Join-Path $PackageRoot 'VERSIONS.txt'), $Versions)
+          @(
+            "Package commit: $env:GITHUB_SHA"
+            'FFmpeg source: https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+            'Deno source: https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
+          ) | Set-Content -Path (Join-Path $PackageRoot 'VERSIONS.txt') -Encoding utf8
 
-          $ZipPath = Join-Path $ReleaseDir 'media-engine-test-package-windows-x64.zip'
-          Compress-Archive -Path (Join-Path $PackageRoot '*') -DestinationPath $ZipPath -CompressionLevel Optimal -Force
-          Write-Host "Package: $ZipPath"
+          Get-ChildItem $PackageRoot -Recurse | Select-Object FullName, Length
 
       - name: Install, smoke and uninstall staged package
         shell: powershell
@@ -130,6 +126,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: media-engine-test-package-windows-x64
-          path: native-host/release/media-engine-test-package-windows-x64.zip
+          path: native-host/release/media-engine-test-package
           if-no-files-found: error
           retention-days: 7
