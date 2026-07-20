@@ -101,27 +101,6 @@ jobs:
 
           Get-ChildItem $PackageRoot -Recurse | Select-Object FullName, Length
 
-      - name: Install, smoke and uninstall staged package
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $EngineDir = Join-Path $PWD 'native-host\release\media-engine-test-package\engine'
-          Push-Location $EngineDir
-          try {
-            ./install_host.ps1
-            $InstalledHost = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\media-engine-host.exe'
-            python "$env:GITHUB_WORKSPACE\native-host\tests\smoke_built_host.py" $InstalledHost
-            $RegistryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.arzumanoff.media_engine'
-            if (-not (Test-Path $RegistryPath)) { throw 'Native Messaging registry key was not created.' }
-            foreach ($Name in @('media-engine-host.exe', 'ffmpeg.exe', 'ffprobe.exe', 'deno.exe', 'native-host.json')) {
-              $Installed = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine\$Name"
-              if (-not (Test-Path $Installed)) { throw "Installed component missing: $Installed" }
-            }
-          } finally {
-            ./uninstall_host.ps1
-            Pop-Location
-          }
-
       - name: Upload complete Windows test package
         uses: actions/upload-artifact@v4
         with:
@@ -129,3 +108,37 @@ jobs:
           path: native-host/release/media-engine-test-package
           if-no-files-found: error
           retention-days: 7
+
+      - name: Install staged package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $EngineDir = Join-Path $PWD 'native-host\release\media-engine-test-package\engine'
+          Push-Location $EngineDir
+          try {
+            ./install_host.ps1
+          } finally {
+            Pop-Location
+          }
+
+      - name: Smoke installed Native Host
+        shell: powershell
+        run: |
+          $InstalledHost = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\media-engine-host.exe'
+          python "$env:GITHUB_WORKSPACE\native-host\tests\smoke_built_host.py" $InstalledHost
+
+      - name: Verify installed files and registry
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $RegistryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.arzumanoff.media_engine'
+          if (-not (Test-Path $RegistryPath)) { throw 'Native Messaging registry key was not created.' }
+          foreach ($Name in @('media-engine-host.exe', 'ffmpeg.exe', 'ffprobe.exe', 'deno.exe', 'native-host.json')) {
+            $Installed = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine\$Name"
+            if (-not (Test-Path $Installed)) { throw "Installed component missing: $Installed" }
+          }
+
+      - name: Uninstall staged package
+        if: always()
+        shell: powershell
+        run: ./native-host/release/media-engine-test-package/engine/uninstall_host.ps1
