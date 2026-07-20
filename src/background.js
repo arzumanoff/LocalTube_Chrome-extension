@@ -2,7 +2,8 @@ importScripts(
   'core/quality.js',
   'core/filename.js',
   'core/jobs.js',
-  'core/messages.js'
+  'core/messages.js',
+  'core/media-url.js'
 );
 
 const {
@@ -12,6 +13,7 @@ const {
   applyDownloadDelta,
   reconcileDownloadState,
   validateStartDownloadPayload,
+  resolveMediaUrl,
 } = self.YTDCore;
 
 const STORAGE_KEY = 'downloadJobs';
@@ -81,10 +83,27 @@ function errorMessage(code) {
     INVALID_FORMAT: 'Ссылка на медиапоток не прошла проверку.',
     INVALID_FORMATS: 'Подходящие форматы не найдены.',
     INVALID_TARGET_HEIGHT: 'Выбрано неподдерживаемое качество.',
+    INVALID_OBSERVED_URLS: 'Не удалось проверить активный медиапоток YouTube.',
+    INVALID_OBSERVED_URL: 'Активный медиапоток YouTube не прошёл проверку.',
     NO_COMPATIBLE_FORMAT: 'Нет готового MP4 с H.264 и AAC для выбранного качества.',
+    MEDIA_URL_FORBIDDEN: 'YouTube отклонил временную ссылку. Запустите воспроизведение на несколько секунд и повторите.',
     DOWNLOAD_CANCELLED: 'Скачивание отменено.',
   };
   return messages[code] || 'Не удалось начать скачивание.';
+}
+
+async function resolveSelectedFormat(selectedFormat, observedUrls) {
+  const result = await resolveMediaUrl(
+    selectedFormat.url,
+    observedUrls,
+    self.fetch.bind(self),
+  );
+  if (!result.ok) return result;
+  return {
+    ok: true,
+    selectedFormat: { ...selectedFormat, url: result.url },
+    resolutionSource: result.source,
+  };
 }
 
 async function startDownload(payload) {
@@ -98,12 +117,17 @@ async function startDownload(payload) {
     return { ok: false, errorCode: 'NO_COMPATIBLE_FORMAT', message: errorMessage('NO_COMPATIBLE_FORMAT') };
   }
 
+  const resolved = await resolveSelectedFormat(selectedFormat, payload.metadata.observedUrls);
+  if (!resolved.ok) {
+    return { ok: false, errorCode: resolved.errorCode, message: errorMessage(resolved.errorCode) };
+  }
+
   let job = createDownloadJob({
     id: createJobId(),
     videoId: payload.metadata.videoId,
     title: payload.metadata.title,
     targetHeight: payload.targetHeight,
-    selectedFormat,
+    selectedFormat: resolved.selectedFormat,
     suggestedFilename: buildSuggestedFilename(payload.metadata.title, payload.metadata.videoId),
   });
   await upsertJob(job);
@@ -111,7 +135,7 @@ async function startDownload(payload) {
 
   try {
     const downloadId = await chromeCall(chrome.downloads.download, chrome.downloads, {
-      url: selectedFormat.url,
+      url: resolved.selectedFormat.url,
       filename: job.suggestedFilename,
       conflictAction: 'uniquify',
       saveAs: true,
@@ -161,15 +185,22 @@ async function retryJob(jobId) {
   const jobs = await readJobs();
   const job = jobs.find((item) => item.id === jobId);
   if (!job) return { ok: false, errorCode: 'JOB_NOT_FOUND' };
+
+  const resolved = await resolveMediaUrl(job.sourceUrl, [], self.fetch.bind(self));
+  if (!resolved.ok) {
+    return { ok: false, errorCode: resolved.errorCode, message: errorMessage(resolved.errorCode) };
+  }
+
   try {
     const downloadId = await chromeCall(chrome.downloads.download, chrome.downloads, {
-      url: job.sourceUrl,
+      url: resolved.url,
       filename: job.suggestedFilename,
       conflictAction: 'uniquify',
       saveAs: true,
     });
     const updated = {
       ...job,
+      sourceUrl: resolved.url,
       downloadId,
       state: 'downloading',
       errorCode: null,
