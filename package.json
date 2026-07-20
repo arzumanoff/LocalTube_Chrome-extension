@@ -1,0 +1,13 @@
+{
+  "name": "youtube-downloader-chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Manifest V3 Chrome extension for downloading permitted YouTube media.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/verify-extension.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
