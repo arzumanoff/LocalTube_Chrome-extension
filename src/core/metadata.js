@@ -55,7 +55,17 @@
     };
   }
 
-  function extractPlayerMetadata(rawResponse, currentUrl) {
+  function normalizeObservedUrls(values) {
+    return (Array.isArray(values) ? values : [])
+      .filter((entry) => entry && typeof entry.url === 'string')
+      .slice(-30)
+      .map((entry) => ({
+        url: String(entry.url),
+        observedAt: Number(entry.observedAt || 0),
+      }));
+  }
+
+  function extractPlayerMetadata(rawResponse, currentUrl, observedUrls = []) {
     const response = parseResponse(rawResponse);
     const details = response && response.videoDetails;
     if (!response || !details || !details.videoId) return null;
@@ -74,12 +84,14 @@
       isLive: Boolean(details.isLiveContent),
       isShort: /\/shorts\//.test(String(currentUrl || '')),
       formats,
+      observedUrls: normalizeObservedUrls(observedUrls),
     };
   }
 
   return {
     parseCodecs,
     normalizeFormat,
+    normalizeObservedUrls,
     extractPlayerMetadata,
   };
 });
