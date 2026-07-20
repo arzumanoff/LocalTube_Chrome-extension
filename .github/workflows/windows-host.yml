@@ -1,0 +1,32 @@
+name: Windows Native Host
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: native-host/requirements.txt
+      - name: Build Native Host
+        shell: powershell
+        run: ./native-host/build_host.ps1
+      - name: Smoke built executable
+        run: python native-host/tests/smoke_built_host.py native-host/dist/media-engine-host.exe
+      - name: Upload development host
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-engine-host-windows-x64
+          path: native-host/dist/media-engine-host.exe
+          if-no-files-found: error
+          retention-days: 7
