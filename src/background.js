@@ -15,7 +15,11 @@ const {
   createDownloadJob,
   applyDownloadDelta,
   reconcileDownloadState,
+  sanitizeJobForStorage,
+  migrateStoredJobs,
+  validateRetryPayload,
   validateStartDownloadPayload,
+  validateRetryDownloadPayload,
   resolveMediaUrl,
   extractPlaybackTokens,
   ensureMp4Filename,
@@ -27,6 +31,8 @@ const MAX_STORED_JOBS = 100;
 const TOKEN_MAX_AGE_MS = 30000;
 const tabTokens = new Map();
 const pendingFilenames = new Map();
+/** @type {Map<string, { url: string, updatedAt: number }>} */
+const activeSourceUrls = new Map();
 
 function chromeCall(method, context, ...args) {
   return new Promise((resolve, reject) => {
@@ -38,29 +44,48 @@ function chromeCall(method, context, ...args) {
   });
 }
 
+function rememberActiveSourceUrl(jobId, url) {
+  if (!jobId || !url) return;
+  activeSourceUrls.set(String(jobId), { url: String(url), updatedAt: Date.now() });
+}
+
+function forgetActiveSourceUrl(jobId) {
+  activeSourceUrls.delete(String(jobId || ''));
+}
+
 async function readJobs() {
   const result = await chromeCall(chrome.storage.local.get, chrome.storage.local, STORAGE_KEY);
-  return Array.isArray(result?.[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+  const raw = Array.isArray(result?.[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+  const migrated = migrateStoredJobs(raw);
+  if (migrated.changed) {
+    await chromeCall(chrome.storage.local.set, chrome.storage.local, { [STORAGE_KEY]: migrated.jobs });
+  }
+  return migrated.jobs;
 }
 
 async function writeJobs(jobs) {
-  const trimmed = [...jobs]
+  const trimmed = migrateStoredJobs(jobs).jobs
     .sort((a, b) => Number(a.createdAt) - Number(b.createdAt))
-    .slice(-MAX_STORED_JOBS);
+    .slice(-MAX_STORED_JOBS)
+    .map((job) => sanitizeJobForStorage(job))
+    .filter(Boolean);
   await chromeCall(chrome.storage.local.set, chrome.storage.local, { [STORAGE_KEY]: trimmed });
   return trimmed;
 }
 
 async function upsertJob(job) {
+  const clean = sanitizeJobForStorage(job);
+  if (!clean) throw new Error('INVALID_JOB');
   const jobs = await readJobs();
-  const index = jobs.findIndex((item) => item.id === job.id);
-  if (index >= 0) jobs[index] = job;
-  else jobs.push(job);
+  const index = jobs.findIndex((item) => item.id === clean.id);
+  if (index >= 0) jobs[index] = clean;
+  else jobs.push(clean);
   await writeJobs(jobs);
-  return job;
+  return clean;
 }
 
 async function broadcastJob(job) {
+  const clean = sanitizeJobForStorage(job) || job;
   let tabs = [];
   try {
     tabs = await chromeCall(chrome.tabs.query, chrome.tabs, { url: ['https://www.youtube.com/*', 'https://youtube.com/*'] });
@@ -72,7 +97,7 @@ async function broadcastJob(job) {
     try {
       await chromeCall(chrome.tabs.sendMessage, chrome.tabs, tab.id, {
         type: 'YTD_JOB_UPDATED',
-        payload: { job },
+        payload: { job: clean },
       });
     } catch {
       // Tabs without this content script are expected to reject the message.
@@ -100,6 +125,7 @@ function errorMessage(code) {
     MEDIA_URL_UNAUTHORIZED: 'Нет доступа к медиапотоку (401).',
     MEDIA_URL_NOT_FOUND: 'Медиапоток не найден (404). Обновите страницу.',
     MEDIA_BAD_CONTENT: 'YouTube вернул текст ошибки вместо MP4. Обновите страницу и повторите.',
+    MEDIA_NOT_MP4: 'Ответ сервера не является MP4-контейнером. Скачивание отменено.',
     MEDIA_PROBE_FAILED: 'Не удалось проверить медиапоток перед скачиванием.',
     MEDIA_EXPIRED: 'Срок действия ссылки истёк. Обновите страницу и повторите.',
     NO_ANDROID_PROGRESSIVE: 'Не удалось получить рабочий progressive MP4. Повторите через несколько секунд.',
@@ -107,6 +133,8 @@ function errorMessage(code) {
     DOWNLOAD_START_FAILED: 'Не удалось открыть окно сохранения.',
     JOB_NOT_FOUND: 'Задание не найдено.',
     RETRY_FAILED: 'Не удалось повторить скачивание.',
+    RETRY_VIDEO_MISMATCH: 'Откройте исходный ролик и повторите.',
+    RETRY_METADATA_REQUIRED: 'Не удалось получить свежие метаданные. Откройте исходный ролик и повторите.',
   };
   return messages[code] || 'Не удалось начать скачивание.';
 }
@@ -146,12 +174,12 @@ function forgetExpiredFilenames() {
 }
 
 async function markJobFailed(job, errorCode) {
-  const failed = {
+  const failed = sanitizeJobForStorage({
     ...job,
     state: 'failed',
     errorCode,
     updatedAt: Date.now(),
-  };
+  });
   await upsertJob(failed);
   await broadcastJob(failed);
   return failed;
@@ -175,7 +203,6 @@ async function launchBrowserDownload(job, sourceUrl) {
 
 async function resolveSelectedFormat(selectedFormat, observedUrls, tabId) {
   const extraTokens = freshTabTokens(tabId);
-  // Prefer direct probe of the selected URL first (ANDROID URLs usually work as-is).
   const result = await resolveMediaUrl(
     selectedFormat.url,
     observedUrls,
@@ -214,30 +241,31 @@ async function startDownload(payload, tabId) {
     selectedFormat: resolved.selectedFormat,
     suggestedFilename: buildSuggestedFilename(payload.metadata.title, payload.metadata.videoId),
   });
+  rememberActiveSourceUrl(job.id, resolved.selectedFormat.url);
   await upsertJob(job);
   await broadcastJob(job);
 
   try {
     const downloadId = await launchBrowserDownload(job, resolved.selectedFormat.url);
-    job = {
+    job = sanitizeJobForStorage({
       ...job,
-      sourceUrl: resolved.selectedFormat.url,
       downloadId,
       state: 'downloading',
       updatedAt: Date.now(),
-    };
+    });
     await upsertJob(job);
     await broadcastJob(job);
     return { ok: true, job, resolutionSource: resolved.resolutionSource };
   } catch (error) {
+    forgetActiveSourceUrl(job.id);
     const cancelled = /cancel/i.test(error.message || '');
     if (cancelled) {
-      job = {
+      job = sanitizeJobForStorage({
         ...job,
         state: 'cancelled',
         errorCode: 'DOWNLOAD_CANCELLED',
         updatedAt: Date.now(),
-      };
+      });
       await upsertJob(job);
       await broadcastJob(job);
       return { ok: false, errorCode: 'DOWNLOAD_CANCELLED', message: errorMessage('DOWNLOAD_CANCELLED'), job };
@@ -259,23 +287,41 @@ async function cancelJob(jobId) {
   if (Number.isInteger(job.downloadId)) {
     try { await chromeCall(chrome.downloads.cancel, chrome.downloads, job.downloadId); } catch { /* Already stopped. */ }
   }
-  const updated = { ...job, state: 'cancelled', errorCode: null, updatedAt: Date.now() };
+  forgetActiveSourceUrl(job.id);
+  const updated = sanitizeJobForStorage({ ...job, state: 'cancelled', errorCode: null, updatedAt: Date.now() });
   await upsertJob(updated);
   await broadcastJob(updated);
   return { ok: true, job: updated };
 }
 
-async function retryJob(jobId, tabId) {
+async function retryJob(payload, tabId) {
+  const validation = validateRetryDownloadPayload(payload);
+  if (!validation.ok) {
+    return { ok: false, errorCode: validation.errorCode, message: errorMessage(validation.errorCode) };
+  }
+
   const jobs = await readJobs();
-  const job = jobs.find((item) => item.id === jobId);
+  const job = jobs.find((item) => item.id === String(payload.jobId || ''));
   if (!job) return { ok: false, errorCode: 'JOB_NOT_FOUND', message: errorMessage('JOB_NOT_FOUND') };
 
-  const resolved = await resolveMediaUrl(
-    job.sourceUrl,
-    [],
-    self.fetch.bind(self),
-    { extraTokens: freshTabTokens(tabId) },
-  );
+  const match = validateRetryPayload(job, payload.metadata);
+  if (!match.ok) {
+    return { ok: false, errorCode: match.errorCode, message: errorMessage(match.errorCode) };
+  }
+
+  // Never reuse a persisted/expired signed URL. Always pick from fresh metadata.
+  const rawFormat = selectNearestProgressiveMp4(payload.metadata.formats, job.targetHeight);
+  if (!rawFormat) {
+    const failed = await markJobFailed(job, 'NO_COMPATIBLE_FORMAT');
+    return {
+      ok: false,
+      errorCode: 'NO_COMPATIBLE_FORMAT',
+      message: errorMessage('NO_COMPATIBLE_FORMAT'),
+      job: failed,
+    };
+  }
+
+  const resolved = await resolveSelectedFormat(rawFormat, payload.metadata.observedUrls, tabId);
   if (!resolved.ok) {
     const failed = await markJobFailed(job, resolved.errorCode);
     return {
@@ -286,21 +332,31 @@ async function retryJob(jobId, tabId) {
     };
   }
 
+  rememberActiveSourceUrl(job.id, resolved.selectedFormat.url);
+
   try {
-    const downloadId = await launchBrowserDownload(job, resolved.url);
-    const updated = {
+    const downloadId = await launchBrowserDownload(job, resolved.selectedFormat.url);
+    const updated = sanitizeJobForStorage({
       ...job,
-      sourceUrl: resolved.url,
+      resolvedHeight: Number(resolved.selectedFormat.height),
+      selectedItag: Number(resolved.selectedFormat.itag),
+      totalBytes: Number(resolved.selectedFormat.contentLength || job.totalBytes || 0),
       downloadId,
       state: 'downloading',
       errorCode: null,
       bytesReceived: 0,
       updatedAt: Date.now(),
-    };
+    });
     await upsertJob(updated);
     await broadcastJob(updated);
-    return { ok: true, job: updated };
+    return {
+      ok: true,
+      job: updated,
+      resolutionSource: resolved.resolutionSource,
+      reusedOldUrl: false,
+    };
   } catch (error) {
+    forgetActiveSourceUrl(job.id);
     return { ok: false, errorCode: 'RETRY_FAILED', message: error.message || errorMessage('RETRY_FAILED') };
   }
 }
@@ -312,7 +368,7 @@ async function reconcileJobs() {
 
   for (const job of jobs) {
     if (!Number.isInteger(job.downloadId) || !['created', 'downloading', 'paused'].includes(job.state)) {
-      reconciled.push(job);
+      reconciled.push(sanitizeJobForStorage(job));
       continue;
     }
     let item = null;
@@ -326,6 +382,12 @@ async function reconcileJobs() {
   }
 
   if (changed) await writeJobs(reconciled);
+}
+
+async function migrateOnBoot() {
+  const jobs = await readJobs();
+  await writeJobs(jobs);
+  await reconcileJobs();
 }
 
 if (chrome.webRequest?.onBeforeRequest) {
@@ -363,7 +425,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'YTD_CANCEL_JOB':
         return cancelJob(String(message.payload?.jobId || ''));
       case 'YTD_RETRY_JOB':
-        return retryJob(String(message.payload?.jobId || ''), sender.tab?.id);
+        return retryJob(message.payload, sender.tab?.id);
       case 'YTD_PING':
         return { ok: true, version: chrome.runtime.getManifest().version };
       default:
@@ -382,10 +444,13 @@ chrome.downloads.onChanged.addListener((delta) => {
     const job = jobs.find((item) => item.downloadId === delta.id);
     if (!job || job.state === 'cancelled') return;
     const updated = applyDownloadDelta(job, delta, Date.now());
+    if (updated.state === 'completed' || updated.state === 'failed') {
+      forgetActiveSourceUrl(job.id);
+    }
     await upsertJob(updated);
     await broadcastJob(updated);
   })().catch(() => undefined);
 });
 
-chrome.runtime.onStartup.addListener(() => { reconcileJobs().catch(() => undefined); });
-chrome.runtime.onInstalled.addListener(() => { reconcileJobs().catch(() => undefined); });
+chrome.runtime.onStartup.addListener(() => { migrateOnBoot().catch(() => undefined); });
+chrome.runtime.onInstalled.addListener(() => { migrateOnBoot().catch(() => undefined); });

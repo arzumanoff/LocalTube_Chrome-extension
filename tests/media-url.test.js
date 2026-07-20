@@ -8,7 +8,9 @@ const {
   applyPlaybackTokens,
   looksLikeMp4,
   looksLikeTextPayload,
+  findFtypOffset,
   classifyMediaProbe,
+  readResponsePrefix,
   resolveMediaUrl,
   candidateUrls,
 } = require('../src/core/media-url.js');
@@ -26,6 +28,47 @@ const observedUrls = [
     itag: '18',
   },
 ];
+
+function mp4Prefix(extraBefore = 0) {
+  const ftyp = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  if (!extraBefore) return ftyp;
+  // free box then ftyp
+  const free = new Uint8Array(8 + extraBefore);
+  free[0] = 0; free[1] = 0; free[2] = 0; free[3] = 8 + extraBefore;
+  free[4] = 0x66; free[5] = 0x72; free[6] = 0x65; free[7] = 0x65; // free
+  const out = new Uint8Array(free.length + ftyp.length);
+  out.set(free, 0);
+  out.set(ftyp, free.length);
+  return out;
+}
+
+function makeStreamResponse(chunks, status = 200, contentType = 'video/mp4') {
+  let index = 0;
+  let cancelled = false;
+  const body = {
+    getReader() {
+      return {
+        async read() {
+          if (cancelled || index >= chunks.length) return { done: true, value: undefined };
+          const value = chunks[index];
+          index += 1;
+          return { done: false, value };
+        },
+        async cancel() {
+          cancelled = true;
+        },
+        releaseLock() {},
+      };
+    },
+  };
+  return {
+    status,
+    headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? contentType : null) },
+    body,
+    get cancelled() { return cancelled; },
+    get readCount() { return index; },
+  };
+}
 
 test('recognizes only HTTPS googlevideo delivery URLs', () => {
   assert.equal(isGoogleVideoUrl(rawUrl), true);
@@ -64,36 +107,80 @@ test('applies and refreshes PO token on retry', () => {
   assert.equal(new URL(refreshed).searchParams.get('n'), 'n2');
 });
 
-test('detects MP4 ftyp magic and rejects text payloads', () => {
-  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
-  const text = new TextEncoder().encode('SERVER_FORBIDDEN');
-  assert.equal(looksLikeMp4(mp4), true);
-  assert.equal(looksLikeMp4(text), false);
-  assert.equal(looksLikeTextPayload(text), true);
+test('detects MP4 ftyp at start and after a leading free box', () => {
+  assert.equal(looksLikeMp4(mp4Prefix()), true);
+  assert.equal(findFtypOffset(mp4Prefix()), 0);
+  const nested = mp4Prefix(8);
+  assert.equal(looksLikeMp4(nested), true);
+  assert.ok(findFtypOffset(nested) > 0);
+  assert.equal(looksLikeMp4(new TextEncoder().encode('SERVER_FORBIDDEN')), false);
+  assert.equal(looksLikeTextPayload(new TextEncoder().encode('SERVER_FORBIDDEN')), true);
 });
 
-test('classifies 403 text responses and accepts partial MP4', () => {
+test('classifies only real MP4 prefixes as successful probes', () => {
   assert.deepEqual(classifyMediaProbe(403, 'text/plain'), { ok: false, errorCode: 'MEDIA_URL_FORBIDDEN' });
-  assert.deepEqual(classifyMediaProbe(200, 'text/plain'), { ok: false, errorCode: 'MEDIA_BAD_CONTENT' });
-  assert.deepEqual(classifyMediaProbe(200, 'text/html'), { ok: false, errorCode: 'MEDIA_BAD_CONTENT' });
-  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
-  assert.deepEqual(classifyMediaProbe(206, 'video/mp4', mp4), { ok: true, errorCode: null });
-  assert.deepEqual(
-    classifyMediaProbe(200, 'application/octet-stream', new TextEncoder().encode('SERVER_ERROR')),
-    { ok: false, errorCode: 'MEDIA_BAD_CONTENT' },
-  );
+  assert.deepEqual(classifyMediaProbe(200, 'text/plain', new TextEncoder().encode('nope')), {
+    ok: false,
+    errorCode: 'MEDIA_BAD_CONTENT',
+  });
+  assert.deepEqual(classifyMediaProbe(200, 'text/html', new TextEncoder().encode('<html>')), {
+    ok: false,
+    errorCode: 'MEDIA_BAD_CONTENT',
+  });
+  assert.deepEqual(classifyMediaProbe(206, 'video/mp4', mp4Prefix()), { ok: true, errorCode: null });
+  assert.deepEqual(classifyMediaProbe(200, 'video/mp4', mp4Prefix(8)), { ok: true, errorCode: null });
+
+  const randomBinary = new Uint8Array(64);
+  for (let i = 0; i < randomBinary.length; i += 1) randomBinary[i] = (i * 37 + 11) & 0xff;
+  assert.deepEqual(classifyMediaProbe(200, 'video/mp4', randomBinary), {
+    ok: false,
+    errorCode: 'MEDIA_NOT_MP4',
+  });
+  assert.deepEqual(classifyMediaProbe(200, 'application/octet-stream', randomBinary), {
+    ok: false,
+    errorCode: 'MEDIA_NOT_MP4',
+  });
 });
 
-test('uses the raw URL when a media probe succeeds', async () => {
+test('readResponsePrefix bounds a huge HTTP 200 stream and cancels the reader', async () => {
+  const hugeTail = new Uint8Array(5 * 1024 * 1024);
+  hugeTail.fill(7);
+  const response = makeStreamResponse([
+    mp4Prefix(),
+    hugeTail,
+    new Uint8Array([9, 9, 9]),
+  ], 200, 'video/mp4');
+
+  const result = await readResponsePrefix(response, 1024);
+  assert.equal(result.bytesRead <= 1024, true);
+  assert.equal(result.bytes.length <= 1024, true);
+  assert.equal(result.cancelled, true);
+  assert.equal(response.cancelled, true);
+  // Only the first chunk needed to fill the budget should be consumed before cancel.
+  assert.ok(response.readCount <= 2);
+  assert.equal(looksLikeMp4(result.bytes), true);
+});
+
+test('readResponsePrefix hard-caps arrayBuffer fallback responses', async () => {
+  const giant = new Uint8Array(4096);
+  giant.set(mp4Prefix(), 0);
+  giant.fill(1, 32);
+  const response = {
+    status: 200,
+    headers: { get: () => 'video/mp4' },
+    arrayBuffer: async () => giant.buffer,
+  };
+  const result = await readResponsePrefix(response, 128);
+  assert.equal(result.bytesRead, 128);
+  assert.equal(result.bytes.length, 128);
+  assert.equal(result.cancelled, true);
+});
+
+test('uses the raw URL when a bounded media probe succeeds', async () => {
   const calls = [];
-  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
-    return {
-      status: 206,
-      headers: { get: () => 'video/mp4' },
-      arrayBuffer: async () => mp4.buffer,
-    };
+    return makeStreamResponse([mp4Prefix()], 206, 'video/mp4');
   };
   const result = await resolveMediaUrl(rawUrl, observedUrls, fetchImpl);
   assert.equal(result.ok, true);
@@ -104,15 +191,13 @@ test('uses the raw URL when a media probe succeeds', async () => {
 
 test('retries with observed player tokens after SERVER_FORBIDDEN', async () => {
   const calls = [];
-  const mp4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]);
   const fetchImpl = async (url) => {
     calls.push(url);
     const ok = String(url).includes('exact-n');
-    return {
-      status: ok ? 206 : 403,
-      headers: { get: () => (ok ? 'video/mp4' : 'text/plain') },
-      arrayBuffer: async () => (ok ? mp4.buffer : new TextEncoder().encode('SERVER_FORBIDDEN').buffer),
-    };
+    if (!ok) {
+      return makeStreamResponse([new TextEncoder().encode('SERVER_FORBIDDEN')], 403, 'text/plain');
+    }
+    return makeStreamResponse([mp4Prefix()], 206, 'video/mp4');
   };
   const result = await resolveMediaUrl(rawUrl, observedUrls, fetchImpl);
   assert.equal(result.ok, true);
@@ -122,11 +207,9 @@ test('retries with observed player tokens after SERVER_FORBIDDEN', async () => {
 });
 
 test('does not open a download when all candidates are forbidden', async () => {
-  const result = await resolveMediaUrl(rawUrl, observedUrls, async () => ({
-    status: 403,
-    headers: { get: () => 'text/plain' },
-    arrayBuffer: async () => new TextEncoder().encode('SERVER_FORBIDDEN').buffer,
-  }));
+  const result = await resolveMediaUrl(rawUrl, observedUrls, async () => (
+    makeStreamResponse([new TextEncoder().encode('SERVER_FORBIDDEN')], 403, 'text/plain')
+  ));
   assert.deepEqual(result, { ok: false, errorCode: 'MEDIA_URL_FORBIDDEN' });
 });
 
@@ -143,11 +226,9 @@ test('treats missing pot as a still-attemptable but non-special case', async () 
     observedAt: 1,
     itag: '137',
   }];
-  const result = await resolveMediaUrl(rawUrl, withoutPot, async () => ({
-    status: 403,
-    headers: { get: () => 'text/plain' },
-    arrayBuffer: async () => new TextEncoder().encode('no').buffer,
-  }));
+  const result = await resolveMediaUrl(rawUrl, withoutPot, async () => (
+    makeStreamResponse([new TextEncoder().encode('no')], 403, 'text/plain')
+  ));
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'MEDIA_URL_FORBIDDEN');
 });

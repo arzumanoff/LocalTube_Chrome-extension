@@ -5,6 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function messagesFactory() {
   const ALLOWED_TARGET_HEIGHTS = new Set([360, 480, 720, 1080, 1440, 2160, 4320]);
   const PAYLOAD_KEYS = ['metadata', 'targetHeight'];
+  const RETRY_PAYLOAD_KEYS = ['jobId', 'metadata'];
   const METADATA_KEYS = [
     'videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort',
     'formats', 'observedUrls', 'downloadClient',
@@ -58,9 +59,7 @@
       typeof entry.itag === 'string';
   }
 
-  function validateStartDownloadPayload(payload) {
-    if (!hasExactKeys(payload, PAYLOAD_KEYS)) return { ok: false, errorCode: 'INVALID_PAYLOAD' };
-    const metadata = payload.metadata;
+  function validateMetadata(metadata) {
     if (!hasExactKeys(metadata, METADATA_KEYS)) return { ok: false, errorCode: 'INVALID_METADATA' };
     if (typeof metadata.videoId !== 'string' || !metadata.videoId) return { ok: false, errorCode: 'INVALID_VIDEO_ID' };
     if (typeof metadata.title !== 'string' || !metadata.title) return { ok: false, errorCode: 'INVALID_TITLE' };
@@ -80,15 +79,30 @@
     if (!metadata.observedUrls.every(validateObservedUrl)) {
       return { ok: false, errorCode: 'INVALID_OBSERVED_URL' };
     }
+    return { ok: true };
+  }
+
+  function validateStartDownloadPayload(payload) {
+    if (!hasExactKeys(payload, PAYLOAD_KEYS)) return { ok: false, errorCode: 'INVALID_PAYLOAD' };
+    const meta = validateMetadata(payload.metadata);
+    if (!meta.ok) return meta;
     if (payload.targetHeight !== null && !ALLOWED_TARGET_HEIGHTS.has(Number(payload.targetHeight))) {
       return { ok: false, errorCode: 'INVALID_TARGET_HEIGHT' };
     }
     return { ok: true };
   }
 
+  function validateRetryDownloadPayload(payload) {
+    if (!hasExactKeys(payload, RETRY_PAYLOAD_KEYS)) return { ok: false, errorCode: 'INVALID_PAYLOAD' };
+    if (typeof payload.jobId !== 'string' || !payload.jobId) return { ok: false, errorCode: 'JOB_NOT_FOUND' };
+    return validateMetadata(payload.metadata);
+  }
+
   return {
     ALLOWED_TARGET_HEIGHTS,
     isAllowedMediaUrl,
+    validateMetadata,
     validateStartDownloadPayload,
+    validateRetryDownloadPayload,
   };
 });

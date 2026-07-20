@@ -190,6 +190,18 @@
     return '';
   }
 
+  async function waitForFreshMetadata(expectedVideoId, attempts = 8) {
+    requestMetadata();
+    for (let i = 0; i < attempts; i += 1) {
+      if (metadata?.videoId && (!expectedVideoId || metadata.videoId === expectedVideoId)) {
+        return metadata;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      requestMetadata();
+    }
+    return metadata;
+  }
+
   function addAction(container, label, type, jobId, shadow) {
     const button = document.createElement('button');
     button.className = 'secondary';
@@ -197,7 +209,25 @@
     button.textContent = label;
     button.addEventListener('click', async () => {
       try {
-        const response = await send({ type, payload: { jobId } });
+        let response;
+        if (type === 'YTD_RETRY_JOB') {
+          const expectedId = activeJob?.videoId || metadata?.videoId || lastVideoId;
+          const fresh = await waitForFreshMetadata(expectedId);
+          if (!fresh?.videoId) {
+            shadow.querySelector('.error').textContent = 'Не удалось получить свежие метаданные. Откройте исходный ролик и повторите.';
+            return;
+          }
+          if (expectedId && fresh.videoId !== expectedId) {
+            shadow.querySelector('.error').textContent = 'Откройте исходный ролик и повторите.';
+            return;
+          }
+          response = await send({
+            type,
+            payload: { jobId, metadata: fresh },
+          });
+        } else {
+          response = await send({ type, payload: { jobId } });
+        }
         if (response?.job) renderJob(shadow, response.job, response);
         else shadow.querySelector('.error').textContent = response?.message || 'Не удалось выполнить действие.';
       } catch (error) {

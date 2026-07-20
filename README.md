@@ -35,7 +35,10 @@
 ```bash
 npm test
 npm run check
+npm run e2e
 ```
+
+`npm run e2e` поднимает временный профиль Chrome, копирует расширение в `os.tmpdir()` и проверяет реальные сценарии. Нужен установленный Chrome; путь можно задать через `CHROME_PATH`. Для e2e требуется `puppeteer-core` (`npm install --no-save puppeteer-core`).
 
 ## Текущие ограничения
 
