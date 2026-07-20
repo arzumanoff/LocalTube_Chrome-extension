@@ -5,6 +5,7 @@
   const SOURCE = 'ytd-extension';
   const REQUEST = 'YTD_REQUEST_METADATA';
   const RESPONSE = 'YTD_PLAYER_METADATA';
+  const observedMediaUrls = new Map();
 
   function currentVideoId() {
     const url = new URL(window.location.href);
@@ -18,6 +19,47 @@
       try { return JSON.parse(value); } catch { return null; }
     }
     return typeof value === 'object' ? value : null;
+  }
+
+  function isGoogleVideoRequest(value) {
+    try {
+      const url = new URL(String(value || ''));
+      const host = url.hostname.toLowerCase();
+      return url.protocol === 'https:' &&
+        (host === 'googlevideo.com' || host.endsWith('.googlevideo.com')) &&
+        url.pathname.includes('/videoplayback');
+    } catch {
+      return false;
+    }
+  }
+
+  function rememberMediaUrl(value) {
+    if (!isGoogleVideoRequest(value)) return;
+    observedMediaUrls.set(String(value), Date.now());
+    if (observedMediaUrls.size > 30) {
+      const oldest = [...observedMediaUrls.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, observedMediaUrls.size - 30);
+      oldest.forEach(([url]) => observedMediaUrls.delete(url));
+    }
+  }
+
+  function collectObservedUrls() {
+    return [...observedMediaUrls.entries()]
+      .map(([url, observedAt]) => ({ url, observedAt }))
+      .sort((a, b) => a.observedAt - b.observedAt);
+  }
+
+  function scanPerformanceEntries(entries) {
+    for (const entry of entries || []) rememberMediaUrl(entry?.name);
+  }
+
+  try {
+    scanPerformanceEntries(performance.getEntriesByType('resource'));
+    const observer = new PerformanceObserver((list) => scanPerformanceEntries(list.getEntries()));
+    observer.observe({ type: 'resource', buffered: true });
+  } catch {
+    // Metadata extraction still works when the performance timeline is unavailable.
   }
 
   function playerCandidates() {
@@ -58,7 +100,11 @@
 
   function emitMetadata() {
     const response = findCurrentResponse();
-    const metadata = window.YTDCore?.extractPlayerMetadata?.(response, window.location.href) || null;
+    const metadata = window.YTDCore?.extractPlayerMetadata?.(
+      response,
+      window.location.href,
+      collectObservedUrls(),
+    ) || null;
     window.postMessage({
       source: SOURCE,
       type: RESPONSE,
