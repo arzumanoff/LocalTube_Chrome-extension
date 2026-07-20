@@ -3,6 +3,12 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.YTDCore = Object.assign(root.YTDCore || {}, api);
 })(typeof globalThis !== 'undefined' ? globalThis : this, function jobsFactory() {
+  const PERSISTED_JOB_KEYS = [
+    'id', 'videoId', 'title', 'targetHeight', 'resolvedHeight', 'selectedItag',
+    'suggestedFilename', 'actualFilename', 'state', 'downloadId', 'bytesReceived', 'totalBytes',
+    'errorCode', 'createdAt', 'updatedAt', 'completedAt',
+  ];
+
   function createDownloadJob(input) {
     const now = Number(input.now || Date.now());
     return {
@@ -12,8 +18,8 @@
       targetHeight: input.targetHeight == null ? null : Number(input.targetHeight),
       resolvedHeight: Number(input.selectedFormat.height),
       selectedItag: Number(input.selectedFormat.itag),
-      sourceUrl: String(input.selectedFormat.url),
       suggestedFilename: String(input.suggestedFilename),
+      actualFilename: null,
       state: 'created',
       downloadId: null,
       bytesReceived: 0,
@@ -25,8 +31,40 @@
     };
   }
 
+  function sanitizeJobForStorage(job) {
+    if (!job || typeof job !== 'object') return null;
+    const clean = {};
+    for (const key of PERSISTED_JOB_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(job, key)) clean[key] = job[key];
+    }
+    // Never persist signed media URLs or token-bearing fields.
+    return clean;
+  }
+
+  function migrateStoredJobs(jobs) {
+    const list = Array.isArray(jobs) ? jobs : [];
+    let changed = false;
+    const migrated = list.map((job) => {
+      if (!job || typeof job !== 'object') {
+        changed = true;
+        return null;
+      }
+      const hadSourceUrl = Object.prototype.hasOwnProperty.call(job, 'sourceUrl');
+      const clean = sanitizeJobForStorage(job);
+      if (!clean) {
+        changed = true;
+        return null;
+      }
+      if (hadSourceUrl || Object.keys(job).some((key) => !PERSISTED_JOB_KEYS.includes(key))) {
+        changed = true;
+      }
+      return clean;
+    }).filter(Boolean);
+    return { jobs: migrated, changed };
+  }
+
   function applyDownloadDelta(job, delta, now = Date.now()) {
-    const next = Object.assign({}, job, { updatedAt: Number(now) });
+    const next = Object.assign({}, sanitizeJobForStorage(job) || job, { updatedAt: Number(now) });
     if (delta.bytesReceived && delta.bytesReceived.current != null) {
       next.bytesReceived = Number(delta.bytesReceived.current);
     }
@@ -47,7 +85,7 @@
     } else if (delta.error && delta.error.current) {
       next.errorCode = String(delta.error.current);
     }
-    return next;
+    return sanitizeJobForStorage(next);
   }
 
   function calculateProgressPercent(job) {
@@ -58,15 +96,16 @@
   }
 
   function reconcileDownloadState(job, downloadItem, now = Date.now()) {
-    if (!downloadItem && ['created', 'downloading', 'paused'].includes(job.state)) {
-      return Object.assign({}, job, {
+    const base = sanitizeJobForStorage(job) || job;
+    if (!downloadItem && ['created', 'downloading', 'paused'].includes(base.state)) {
+      return sanitizeJobForStorage(Object.assign({}, base, {
         state: 'recoverable',
         errorCode: 'DOWNLOAD_RECORD_MISSING',
         updatedAt: Number(now),
-      });
+      }));
     }
-    if (!downloadItem) return job;
-    return applyDownloadDelta(job, {
+    if (!downloadItem) return base;
+    return applyDownloadDelta(base, {
       bytesReceived: { current: downloadItem.bytesReceived || 0 },
       totalBytes: { current: downloadItem.totalBytes || 0 },
       paused: { current: Boolean(downloadItem.paused) },
@@ -75,10 +114,27 @@
     }, now);
   }
 
+  function validateRetryPayload(job, metadata) {
+    if (!job || typeof job !== 'object' || !job.id || !job.videoId) {
+      return { ok: false, errorCode: 'JOB_NOT_FOUND' };
+    }
+    if (!metadata || typeof metadata !== 'object') {
+      return { ok: false, errorCode: 'INVALID_METADATA' };
+    }
+    if (String(metadata.videoId || '') !== String(job.videoId)) {
+      return { ok: false, errorCode: 'RETRY_VIDEO_MISMATCH' };
+    }
+    return { ok: true };
+  }
+
   return {
+    PERSISTED_JOB_KEYS,
     createDownloadJob,
+    sanitizeJobForStorage,
+    migrateStoredJobs,
     applyDownloadDelta,
     calculateProgressPercent,
     reconcileDownloadState,
+    validateRetryPayload,
   };
 });

@@ -5,6 +5,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function qualityFactory() {
   const DEFAULT_TARGET_HEIGHTS = [2160, 1440, 1080, 720, 480, 360];
 
+  function clientPriority(client) {
+    const name = String(client || '');
+    if (name === 'ANDROID' || name.startsWith('ANDROID')) return 3;
+    if (name === 'IOS') return 2;
+    if (name === 'web' || name === 'WEB') return 0;
+    return 1;
+  }
+
   function isProgressiveMp4(format) {
     const codecs = Array.isArray(format && format.codecs) ? format.codecs : [];
     const hasH264 = codecs.some((codec) => /^avc[13]\./i.test(String(codec)));
@@ -24,6 +32,7 @@
   function compareFormats(a, b) {
     return (
       Number(b.height || 0) - Number(a.height || 0) ||
+      clientPriority(b.client) - clientPriority(a.client) ||
       Number(b.fps || 0) - Number(a.fps || 0) ||
       Number(b.bitrate || 0) - Number(a.bitrate || 0)
     );
