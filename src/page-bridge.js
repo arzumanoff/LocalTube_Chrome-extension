@@ -5,6 +5,35 @@
   const SOURCE = 'ytd-extension';
   const REQUEST = 'YTD_REQUEST_METADATA';
   const RESPONSE = 'YTD_PLAYER_METADATA';
+  const observedPlaybackUrls = [];
+  const observedPlaybackUrlSet = new Set();
+
+  function rememberPlaybackUrl(value) {
+    const url = String(value || '');
+    if (!window.YTDCore?.isGoogleVideoUrl?.(url) || observedPlaybackUrlSet.has(url)) return;
+    observedPlaybackUrlSet.add(url);
+    observedPlaybackUrls.push(url);
+    while (observedPlaybackUrls.length > 100) {
+      observedPlaybackUrlSet.delete(observedPlaybackUrls.shift());
+    }
+  }
+
+  function seedPlaybackUrls() {
+    try {
+      performance.getEntriesByType('resource').forEach((entry) => rememberPlaybackUrl(entry.name));
+    } catch { /* Resource timing may be unavailable during early navigation. */ }
+  }
+
+  function observePlaybackUrls() {
+    seedPlaybackUrls();
+    if (typeof PerformanceObserver !== 'function') return;
+    try {
+      const observer = new PerformanceObserver((list) => {
+        list.getEntries().forEach((entry) => rememberPlaybackUrl(entry.name));
+      });
+      observer.observe({ type: 'resource', buffered: true });
+    } catch { /* Older Chromium builds can reject buffered resource observers. */ }
+  }
 
   function currentVideoId() {
     const url = new URL(window.location.href);
@@ -57,8 +86,13 @@
   }
 
   function emitMetadata() {
+    seedPlaybackUrls();
     const response = findCurrentResponse();
-    const metadata = window.YTDCore?.extractPlayerMetadata?.(response, window.location.href) || null;
+    const metadata = window.YTDCore?.extractPlayerMetadata?.(
+      response,
+      window.location.href,
+      observedPlaybackUrls,
+    ) || null;
     window.postMessage({
       source: SOURCE,
       type: RESPONSE,
@@ -77,5 +111,6 @@
 
   document.addEventListener('yt-navigate-finish', scheduleMetadataEmission, true);
   window.addEventListener('popstate', scheduleMetadataEmission);
+  observePlaybackUrls();
   scheduleMetadataEmission();
 })();
