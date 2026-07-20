@@ -22,6 +22,34 @@
     return mediaType.includes('/') ? mediaType.split('/')[1].toLowerCase() : '';
   }
 
+  function isGoogleVideoUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      return url.protocol === 'https:' && (url.hostname === 'googlevideo.com' || url.hostname.endsWith('.googlevideo.com'));
+    } catch {
+      return false;
+    }
+  }
+
+  function extractPoTokenFromResourceUrls(resourceUrls) {
+    let token = '';
+    for (const value of Array.isArray(resourceUrls) ? resourceUrls : []) {
+      if (!isGoogleVideoUrl(value)) continue;
+      try {
+        const candidate = new URL(value).searchParams.get('pot');
+        if (candidate) token = candidate;
+      } catch { /* Ignore malformed performance entries. */ }
+    }
+    return token;
+  }
+
+  function addPoTokenToGoogleVideoUrl(value, poToken, replaceExisting = false) {
+    if (!poToken || !isGoogleVideoUrl(value)) return String(value || '');
+    const url = new URL(String(value));
+    if (replaceExisting || !url.searchParams.has('pot')) url.searchParams.set('pot', poToken);
+    return url.toString();
+  }
+
   function parseHeight(format) {
     const direct = Number(format && format.height);
     if (Number.isFinite(direct) && direct > 0) return direct;
@@ -29,7 +57,7 @@
     return match ? Number(match[1]) : 0;
   }
 
-  function normalizeFormat(format) {
+  function normalizeFormat(format, poToken = '') {
     if (!format || typeof format !== 'object' || !format.url) return null;
     const mimeType = String(format.mimeType || '');
     const codecs = parseCodecs(mimeType);
@@ -51,19 +79,20 @@
       contentLength: format.contentLength ? Number(format.contentLength) : null,
       hasAudio,
       hasVideo,
-      url: String(format.url),
+      url: addPoTokenToGoogleVideoUrl(format.url, poToken),
     };
   }
 
-  function extractPlayerMetadata(rawResponse, currentUrl) {
+  function extractPlayerMetadata(rawResponse, currentUrl, resourceUrls = []) {
     const response = parseResponse(rawResponse);
     const details = response && response.videoDetails;
     if (!response || !details || !details.videoId) return null;
 
+    const poToken = extractPoTokenFromResourceUrls(resourceUrls);
     const formats = (response.streamingData && Array.isArray(response.streamingData.formats)
       ? response.streamingData.formats
       : [])
-      .map(normalizeFormat)
+      .map((format) => normalizeFormat(format, poToken))
       .filter(Boolean);
 
     return {
@@ -79,6 +108,9 @@
 
   return {
     parseCodecs,
+    isGoogleVideoUrl,
+    extractPoTokenFromResourceUrls,
+    addPoTokenToGoogleVideoUrl,
     normalizeFormat,
     extractPlayerMetadata,
   };
