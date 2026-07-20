@@ -5,11 +5,14 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function messagesFactory() {
   const ALLOWED_TARGET_HEIGHTS = new Set([360, 480, 720, 1080, 1440, 2160, 4320]);
   const PAYLOAD_KEYS = ['metadata', 'targetHeight'];
-  const METADATA_KEYS = ['videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort', 'formats'];
+  const METADATA_KEYS = [
+    'videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort', 'formats', 'observedUrls',
+  ];
   const FORMAT_KEYS = [
     'itag', 'mimeType', 'container', 'codecs', 'qualityLabel', 'width', 'height', 'fps',
     'bitrate', 'contentLength', 'hasAudio', 'hasVideo', 'url',
   ];
+  const OBSERVED_URL_KEYS = ['url', 'observedAt'];
 
   function hasExactKeys(value, expected) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -46,6 +49,12 @@
       isAllowedMediaUrl(format.url);
   }
 
+  function validateObservedUrl(entry) {
+    return hasExactKeys(entry, OBSERVED_URL_KEYS) &&
+      isAllowedMediaUrl(entry.url) &&
+      Number.isFinite(Number(entry.observedAt));
+  }
+
   function validateStartDownloadPayload(payload) {
     if (!hasExactKeys(payload, PAYLOAD_KEYS)) return { ok: false, errorCode: 'INVALID_PAYLOAD' };
     const metadata = payload.metadata;
@@ -61,6 +70,12 @@
       return { ok: false, errorCode: 'INVALID_FORMATS' };
     }
     if (!metadata.formats.every(validateFormat)) return { ok: false, errorCode: 'INVALID_FORMAT' };
+    if (!Array.isArray(metadata.observedUrls) || metadata.observedUrls.length > 30) {
+      return { ok: false, errorCode: 'INVALID_OBSERVED_URLS' };
+    }
+    if (!metadata.observedUrls.every(validateObservedUrl)) {
+      return { ok: false, errorCode: 'INVALID_OBSERVED_URL' };
+    }
     if (payload.targetHeight !== null && !ALLOWED_TARGET_HEIGHTS.has(Number(payload.targetHeight))) {
       return { ok: false, errorCode: 'INVALID_TARGET_HEIGHT' };
     }
