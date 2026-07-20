@@ -28,6 +28,7 @@ const referenced = new Set([
   manifest.background.service_worker,
   ...manifest.content_scripts.flatMap((entry) => entry.js || []),
   ...Object.values(manifest.icons || {}),
+  'native-host/bootstrap.py',
   'native-host/host.py',
   'native-host/engine.py',
   'native-host/protocol.py',

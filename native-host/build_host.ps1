@@ -21,6 +21,6 @@ $VenvPython = Join-Path $Venv "Scripts\python.exe"
   --distpath (Join-Path $Root "dist") `
   --workpath (Join-Path $Root "build") `
   --specpath (Join-Path $Root "build") `
-  (Join-Path $Root "host.py")
+  (Join-Path $Root "bootstrap.py")
 
 Write-Host "Built: $Root\dist\media-engine-host.exe"
