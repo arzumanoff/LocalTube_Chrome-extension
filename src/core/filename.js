@@ -27,7 +27,8 @@
 
   function buildSuggestedFilename(title, videoId) {
     const base = sanitizeFilename(title, videoId || 'video', 180);
-    return `${base}.mp4`;
+    const withExt = /\.mp4$/i.test(base) ? base.replace(/\.mp4$/i, '') : base;
+    return `${withExt || 'video'}.mp4`;
   }
 
   return { sanitizeFilename, buildSuggestedFilename };

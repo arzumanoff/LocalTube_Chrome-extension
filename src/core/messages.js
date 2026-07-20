@@ -5,11 +5,15 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function messagesFactory() {
   const ALLOWED_TARGET_HEIGHTS = new Set([360, 480, 720, 1080, 1440, 2160, 4320]);
   const PAYLOAD_KEYS = ['metadata', 'targetHeight'];
-  const METADATA_KEYS = ['videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort', 'formats'];
+  const METADATA_KEYS = [
+    'videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort',
+    'formats', 'observedUrls', 'downloadClient',
+  ];
   const FORMAT_KEYS = [
     'itag', 'mimeType', 'container', 'codecs', 'qualityLabel', 'width', 'height', 'fps',
-    'bitrate', 'contentLength', 'hasAudio', 'hasVideo', 'url',
+    'bitrate', 'contentLength', 'hasAudio', 'hasVideo', 'url', 'client',
   ];
+  const OBSERVED_URL_KEYS = ['url', 'observedAt', 'itag'];
 
   function hasExactKeys(value, expected) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -43,7 +47,15 @@
       (format.contentLength === null || Number.isFinite(Number(format.contentLength))) &&
       typeof format.hasAudio === 'boolean' &&
       typeof format.hasVideo === 'boolean' &&
+      typeof format.client === 'string' &&
       isAllowedMediaUrl(format.url);
+  }
+
+  function validateObservedUrl(entry) {
+    return hasExactKeys(entry, OBSERVED_URL_KEYS) &&
+      isAllowedMediaUrl(entry.url) &&
+      Number.isFinite(Number(entry.observedAt)) &&
+      typeof entry.itag === 'string';
   }
 
   function validateStartDownloadPayload(payload) {
@@ -57,10 +69,17 @@
     if (typeof metadata.isLive !== 'boolean' || typeof metadata.isShort !== 'boolean') {
       return { ok: false, errorCode: 'INVALID_FLAGS' };
     }
+    if (typeof metadata.downloadClient !== 'string') return { ok: false, errorCode: 'INVALID_DOWNLOAD_CLIENT' };
     if (!Array.isArray(metadata.formats) || metadata.formats.length < 1 || metadata.formats.length > 100) {
       return { ok: false, errorCode: 'INVALID_FORMATS' };
     }
     if (!metadata.formats.every(validateFormat)) return { ok: false, errorCode: 'INVALID_FORMAT' };
+    if (!Array.isArray(metadata.observedUrls) || metadata.observedUrls.length > 40) {
+      return { ok: false, errorCode: 'INVALID_OBSERVED_URLS' };
+    }
+    if (!metadata.observedUrls.every(validateObservedUrl)) {
+      return { ok: false, errorCode: 'INVALID_OBSERVED_URL' };
+    }
     if (payload.targetHeight !== null && !ALLOWED_TARGET_HEIGHTS.has(Number(payload.targetHeight))) {
       return { ok: false, errorCode: 'INVALID_TARGET_HEIGHT' };
     }
