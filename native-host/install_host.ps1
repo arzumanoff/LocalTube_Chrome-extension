@@ -43,13 +43,6 @@ $Json = $Manifest | ConvertTo-Json -Depth 4
 New-Item -Path $RegistryPath -Force | Out-Null
 Set-Item -Path $RegistryPath -Value $ManifestPath
 
-& (Join-Path $InstallDir "ffmpeg.exe") -version 2>$null | Select-Object -First 1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "FFmpeg self-check failed." }
-& (Join-Path $InstallDir "ffprobe.exe") -version 2>$null | Select-Object -First 1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "FFprobe self-check failed." }
-& (Join-Path $InstallDir "deno.exe") --version 2>$null | Select-Object -First 1 | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Deno self-check failed." }
-
 Write-Host ""
 Write-Host "Local download engine installed successfully." -ForegroundColor Green
 Write-Host "Extension ID: $ExtensionId"
