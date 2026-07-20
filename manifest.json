@@ -34,7 +34,6 @@
     {
       "resources": [
         "src/core/metadata.js",
-        "src/core/media-url.js",
         "src/page-bridge.js"
       ],
       "matches": [
