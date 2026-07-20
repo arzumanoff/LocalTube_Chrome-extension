@@ -1,53 +1,92 @@
-# YouTube Video Downloader — Chrome Extension
+# Media Downloader — Chrome extension
 
-Автономное расширение Chrome, которое добавляет кнопку **«Скачать»** под обычными YouTube-видео и в Shorts.
+Development repository for a public-facing video download product. The final brand name is not selected yet.
 
-## Возможности Phase 1
+The current architecture is intentionally split into two parts:
 
-- Manifest V3 без внешнего сервера и без удалённо исполняемого кода;
-- кнопка «Скачать» на страницах `/watch` и `/shorts/`;
-- поддержка переходов YouTube без полной перезагрузки страницы;
-- получение метаданных из активного YouTube-плеера через минимальный page bridge;
-- выбор качества и автоматический переход на ближайшее доступное ниже;
-- загрузка готового MP4 с H.264-видео и AAC-аудио;
-- получение рабочих progressive URL через Innertube-клиент `ANDROID` (обход WEB 403 / `SERVER_FORBIDDEN`);
-- резервный захват медиатокенов (`n`, `pot`) из плеера и `webRequest`;
-- preflight-проверка потока (HTTP 200/206, Content-Type, magic bytes) до окна «Сохранить как»;
-- принудительное имя файла `.mp4` без TXT-ответов `SERVER_FORBIDDEN`;
-- системное окно выбора имени и места сохранения;
-- постоянная история заданий в `chrome.storage.local`;
-- прогресс, отмена, повтор и восстановление состояния после перезапуска service worker.
-
-## Установка
-
-1. Скачайте или клонируйте репозиторий.
-2. Откройте `chrome://extensions`.
-3. Включите **Режим разработчика**.
-4. Нажмите **Загрузить распакованное расширение**.
-5. Выберите корневую папку проекта, где расположен `manifest.json`.
-6. Откройте YouTube-видео или Shorts, **запустите воспроизведение на 2–3 секунды** и нажмите **«Скачать»**.
-7. После обновления расширения на `chrome://extensions` сделайте **Ctrl+F5** на вкладке YouTube.
-
-## Проверка
-
-Требуется Node.js 20 или новее.
-
-```bash
-npm test
-npm run check
-npm run e2e
+```text
+Chrome extension UI
+        ↓ Native Messaging
+local Windows engine
+        ↓
+yt-dlp + FFmpeg/FFprobe
 ```
 
-`npm run e2e` поднимает временный профиль Chrome, копирует расширение в `os.tmpdir()` и проверяет реальные сценарии. Нужен установленный Chrome; путь можно задать через `CHROME_PATH`. Для e2e требуется `puppeteer-core` (`npm install --no-save puppeteer-core`).
+The extension does not parse or download signed `googlevideo` streams itself. It sends the current YouTube URL to the local engine, receives the real available qualities, and shows only those qualities to the user.
 
-## Текущие ограничения
+## Current MVP
 
-Phase 1 работает только с прямыми прогрессивными потоками, в которых YouTube уже объединил H.264-видео и AAC-аудио в MP4. На практике это чаще всего 360p или 720p. Если YouTube отдаёт видео и звук раздельно, расширение объясняет, что этот ролик потребует Phase 2 с OPFS, WebCodecs и `ffmpeg.wasm`.
+- button **«Скачать»** under ordinary YouTube videos;
+- dynamic quality list from `yt-dlp`;
+- no fixed 4K/1080p/720p list and no upscaling;
+- separate labels such as `1080p` and `1080p60` when both really exist;
+- editable output filename;
+- native Windows **Save As** dialog;
+- download, merge, H.264/AAC conversion when required;
+- progress events and cancellation;
+- stable development extension ID;
+- one active download at a time.
 
-Перед сохранением расширение проверяет временную `googlevideo` ссылку. При HTTP 403 окно сохранения не открывается, текстовый ответ сервера не выдаётся за MP4. Если после reload расширения кнопка «ломается», обновите вкладку YouTube (Ctrl+F5).
+Shorts, playlists, live streams, the public one-click installer, the website and other browsers are later stages.
 
-WEB-URL из `playerResponse` часто отдают 403; рабочий progressive MP4 берётся через локальный запрос `youtubei/v1/player` от имени клиента ANDROID прямо в контексте страницы YouTube (без сторонних серверов).
+## Repository layout
 
-Плейлисты и запись активных эфиров входят в последующие этапы утверждённой спецификации.
+```text
+manifest.json
+src/
+  native-background.js    Native Messaging coordinator
+  native-content.js       YouTube button and dynamic dialog
+  core/native.js          strict message and quality model
+native-host/
+  host.py                 Native Messaging process
+  engine.py               yt-dlp and FFmpeg engine
+  protocol.py             length-prefixed JSON protocol
+  build_host.ps1          Windows development build
+  install_host.ps1        current-user Chrome registration
+  uninstall_host.ps1
+tests/
+  native.test.js
+```
 
-Расширение не обходит DRM, платный доступ, приватность, географические ограничения или права текущего аккаунта. Используйте его только для материалов, которые вы вправе скачивать.
+Legacy browser-only implementation files remain in Git history and may still exist in the repository, but the active manifest no longer loads them.
+
+## JavaScript checks
+
+Node.js 20 or newer:
+
+```bash
+npm ci
+npm test
+npm run check
+```
+
+## Native Host tests
+
+```bash
+npm run test:host
+```
+
+## Windows development installation
+
+See [`native-host/README.md`](native-host/README.md).
+
+This stage uses a development PowerShell installer. A signed public installer that bundles the engine and all dependencies will be implemented after the single-video flow is stable.
+
+## Manual smoke test
+
+```bash
+npm run smoke:manual
+```
+
+The command prints the five required manual scenarios. It does not automatically open repeated Save As dialogs or download the same videos in a loop.
+
+## Product rules
+
+- show only resolutions that actually exist for the current video;
+- never upscale a source;
+- keep separate media tracks and codec details hidden from ordinary users;
+- save the final file as MP4 with H.264 video and AAC audio;
+- do not send URLs, cookies, titles or media data to a third-party server;
+- do not bypass DRM, paid access, private-video permissions, geography or account restrictions.
+
+Use the product only for media that you are authorized to save.
