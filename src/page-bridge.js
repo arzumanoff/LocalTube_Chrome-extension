@@ -124,16 +124,60 @@
     return responses;
   }
 
-  function findCurrentResponse() {
-    const expectedId = currentVideoId();
+  function findCurrentResponse(expectedVideoId) {
+    const expectedId = String(expectedVideoId || currentVideoId() || '');
+    if (!expectedId) return null;
     const responses = collectResponses();
-    if (!responses.length) return null;
-    return responses.find((response) => response?.videoDetails?.videoId === expectedId) || responses[0];
+    return responses.find((response) => response?.videoDetails?.videoId === expectedId) || null;
+  }
+
+  function readDomTitle(expectedVideoId) {
+    const expectedId = String(expectedVideoId || '');
+    const selectors = [
+      'h1.ytd-watch-metadata yt-formatted-string',
+      'h1 yt-formatted-string',
+      'ytd-watch-metadata h1',
+      '#title h1',
+      'ytd-reel-video-renderer[is-active] h2',
+      'ytd-reel-player-header-renderer h2',
+    ];
+    for (const selector of selectors) {
+      const node = document.querySelector(selector);
+      const text = node && String(node.textContent || '').trim();
+      if (text) {
+        return {
+          videoId: expectedId,
+          title: text.replace(/\s+/g, ' ').trim(),
+          author: '',
+          lengthSeconds: 0,
+          isLiveContent: false,
+        };
+      }
+    }
+    const docTitle = String(document.title || '')
+      .replace(/\s*-\s*YouTube\s*$/i, '')
+      .trim();
+    if (docTitle) {
+      return {
+        videoId: expectedId,
+        title: docTitle,
+        author: '',
+        lengthSeconds: 0,
+        isLiveContent: false,
+      };
+    }
+    return expectedId ? {
+      videoId: expectedId,
+      title: expectedId,
+      author: '',
+      lengthSeconds: 0,
+      isLiveContent: false,
+    } : null;
   }
 
   async function resolveDownloadableFormats(videoId) {
     if (!videoId || !window.YTDCore?.resolveDownloadableFormats) {
-      return { ok: false, progressive: [], client: '' };
+      return { ok: false, progressive: [], client: '', response: null };
     }
     const apiKey = readYtcfg('INNERTUBE_API_KEY') || undefined;
     const visitorData = readYtcfg('VISITOR_DATA') || '';
@@ -155,23 +199,35 @@
     } catch { /* ignore */ }
 
     const videoId = currentVideoId();
-    const webResponse = findCurrentResponse();
+    if (!videoId) return null;
+
+    const webResponse = findCurrentResponse(videoId);
     const downloadable = await resolveDownloadableFormats(videoId);
+    const downloadDetails = downloadable.ok &&
+      downloadable.response?.videoDetails?.videoId === videoId
+      ? downloadable.response.videoDetails
+      : null;
     const downloadFormats = downloadable.ok
       ? (downloadable.progressive || []).map((format) => ({ ...format, client: downloadable.client }))
       : [];
+    const domDetails = readDomTitle(videoId);
 
     const metadata = window.YTDCore?.extractPlayerMetadata?.(
       webResponse,
       window.location.href,
       collectObservedUrls(),
       {
+        expectedVideoId: videoId,
         downloadFormats,
         downloadClient: downloadable.client || '',
-        videoDetails: webResponse?.videoDetails || downloadable.response?.videoDetails,
+        downloadDetails,
+        webDetails: webResponse?.videoDetails || null,
+        domDetails,
+        domTitle: domDetails?.title || '',
       },
     ) || null;
 
+    if (metadata && metadata.videoId !== videoId) return null;
     return metadata;
   }
 
@@ -194,6 +250,8 @@
     inflight = buildMetadata();
     try {
       const metadata = await inflight;
+      // Drop stale emissions if the user navigated away during the request.
+      if (currentVideoId() !== videoId) return;
       window.postMessage({ source: SOURCE, type: RESPONSE, payload: metadata }, window.location.origin);
     } catch {
       window.postMessage({ source: SOURCE, type: RESPONSE, payload: null }, window.location.origin);
@@ -215,10 +273,12 @@
 
   document.addEventListener('yt-navigate-finish', () => {
     lastEmittedVideoId = '';
+    inflight = null;
     scheduleMetadataEmission();
   }, true);
   window.addEventListener('popstate', () => {
     lastEmittedVideoId = '';
+    inflight = null;
     scheduleMetadataEmission();
   });
   observePlaybackUrls();

@@ -107,7 +107,6 @@
       const key = `${format.itag}:${format.height}:${format.client || ''}`;
       map.set(key, format);
     }
-    // Prefer higher height, then prefer android/ios clients over web for same height
     return [...map.values()].sort((a, b) =>
       Number(b.height || 0) - Number(a.height || 0) ||
       (String(a.client).startsWith('ANDROID') || String(a.client) === 'IOS' ? -1 : 0) -
@@ -115,12 +114,55 @@
     );
   }
 
+  function detailsMatchVideoId(details, expectedVideoId) {
+    if (!details || typeof details !== 'object') return false;
+    if (!expectedVideoId) return Boolean(details.videoId);
+    return String(details.videoId || '') === String(expectedVideoId);
+  }
+
+  function pickVideoDetails(options = {}) {
+    const expectedVideoId = String(options.expectedVideoId || '');
+    const candidates = [
+      options.downloadDetails,
+      options.webDetails,
+      options.domDetails,
+      options.videoDetails,
+    ];
+    for (const candidate of candidates) {
+      if (detailsMatchVideoId(candidate, expectedVideoId)) return candidate;
+    }
+    return null;
+  }
+
   function extractPlayerMetadata(rawResponse, currentUrl, observedUrls = [], options = {}) {
     const response = parseResponse(rawResponse);
-    const details = (response && response.videoDetails) || options.videoDetails || null;
-    if (!details || !details.videoId) return null;
+    const expectedVideoId = String(options.expectedVideoId || '');
 
-    const webFormats = (response && response.streamingData && Array.isArray(response.streamingData.formats)
+    // Never accept mismatched WEB response body.
+    const webDetails = response && response.videoDetails && detailsMatchVideoId(response.videoDetails, expectedVideoId)
+      ? response.videoDetails
+      : null;
+    const downloadDetails = options.downloadDetails && detailsMatchVideoId(options.downloadDetails, expectedVideoId)
+      ? options.downloadDetails
+      : null;
+    const fallbackDetails = options.videoDetails && detailsMatchVideoId(options.videoDetails, expectedVideoId)
+      ? options.videoDetails
+      : null;
+    const domDetails = options.domDetails && detailsMatchVideoId(options.domDetails, expectedVideoId)
+      ? options.domDetails
+      : null;
+
+    const details = pickVideoDetails({
+      expectedVideoId,
+      downloadDetails,
+      webDetails,
+      domDetails,
+      videoDetails: fallbackDetails,
+    });
+    if (!details || !details.videoId) return null;
+    if (expectedVideoId && String(details.videoId) !== expectedVideoId) return null;
+
+    const webFormats = (response && webDetails && response.streamingData && Array.isArray(response.streamingData.formats)
       ? response.streamingData.formats
       : [])
       .map((format) => normalizeFormat(format, 'web'))
@@ -133,9 +175,11 @@
     const formats = mergeFormats(downloadFormats, webFormats);
     if (!formats.length) return null;
 
+    const title = String(details.title || options.domTitle || details.videoId || expectedVideoId || 'video');
+
     return {
       videoId: String(details.videoId),
-      title: String(details.title || details.videoId),
+      title,
       channel: String(details.author || ''),
       durationSeconds: Number(details.lengthSeconds || 0),
       isLive: Boolean(details.isLiveContent),
@@ -152,6 +196,8 @@
     normalizeObservedUrls,
     resolveFormatUrl,
     mergeFormats,
+    detailsMatchVideoId,
+    pickVideoDetails,
     extractPlayerMetadata,
   };
 });

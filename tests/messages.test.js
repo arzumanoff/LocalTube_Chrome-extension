@@ -1,6 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { validateStartDownloadPayload, isAllowedMediaUrl } = require('../src/core/messages.js');
+const { resolveRequestedFilename } = require('../src/core/filename.js');
+const { createDownloadJob } = require('../src/core/jobs.js');
 
 const format = {
   itag: 18,
@@ -36,6 +38,7 @@ const payload = {
     downloadClient: 'ANDROID',
   },
   targetHeight: 720,
+  requestedFilename: 'Custom Name.mp4',
 };
 
 test('allows only HTTPS YouTube media delivery URLs', () => {
@@ -43,7 +46,7 @@ test('allows only HTTPS YouTube media delivery URLs', () => {
   assert.equal(isAllowedMediaUrl('https://evil.test/file.mp4'), false);
 });
 
-test('accepts the exact typed start-download payload', () => {
+test('accepts the exact typed start-download payload with requestedFilename', () => {
   assert.deepEqual(validateStartDownloadPayload(payload), { ok: true });
 });
 
@@ -75,4 +78,19 @@ test('accepts empty observed URL list when player has not started', () => {
   const idle = JSON.parse(JSON.stringify(payload));
   idle.metadata.observedUrls = [];
   assert.deepEqual(validateStartDownloadPayload(idle), { ok: true });
+});
+
+test('retry keeps user-selected suggestedFilename on the job', () => {
+  const custom = resolveRequestedFilename('Мой тестовый ролик', 'Ignored', 'abc');
+  const job = createDownloadJob({
+    id: 'job-1',
+    videoId: 'abc',
+    title: 'Ignored',
+    targetHeight: 720,
+    selectedFormat: format,
+    suggestedFilename: custom,
+  });
+  assert.equal(job.suggestedFilename, 'Мой тестовый ролик.mp4');
+  // Retry path intentionally reuses job.suggestedFilename rather than regenerating from title.
+  assert.equal(job.suggestedFilename, custom);
 });

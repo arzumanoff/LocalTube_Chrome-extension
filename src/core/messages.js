@@ -4,7 +4,7 @@
   root.YTDCore = Object.assign(root.YTDCore || {}, api);
 })(typeof globalThis !== 'undefined' ? globalThis : this, function messagesFactory() {
   const ALLOWED_TARGET_HEIGHTS = new Set([360, 480, 720, 1080, 1440, 2160, 4320]);
-  const PAYLOAD_KEYS = ['metadata', 'targetHeight'];
+  const PAYLOAD_KEYS = ['metadata', 'targetHeight', 'requestedFilename'];
   const RETRY_PAYLOAD_KEYS = ['jobId', 'metadata'];
   const METADATA_KEYS = [
     'videoId', 'title', 'channel', 'durationSeconds', 'isLive', 'isShort',
@@ -88,6 +88,12 @@
     if (!meta.ok) return meta;
     if (payload.targetHeight !== null && !ALLOWED_TARGET_HEIGHTS.has(Number(payload.targetHeight))) {
       return { ok: false, errorCode: 'INVALID_TARGET_HEIGHT' };
+    }
+    if (typeof payload.requestedFilename !== 'string') {
+      return { ok: false, errorCode: 'INVALID_REQUESTED_FILENAME' };
+    }
+    if (payload.requestedFilename.length > 260) {
+      return { ok: false, errorCode: 'INVALID_REQUESTED_FILENAME' };
     }
     return { ok: true };
   }

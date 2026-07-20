@@ -161,7 +161,12 @@
       <style>
         :host{all:initial}*{box-sizing:border-box}.overlay{position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:20px;background:rgba(0,0,0,.68);font-family:Arial;color:#f5f5f5}.card{width:min(560px,100%);max-height:calc(100vh - 40px);overflow:auto;background:#171717;border:1px solid #343434;border-radius:18px}.head{display:flex;justify-content:space-between;padding:22px 22px 14px}.head h2{margin:0;font-size:22px}.close{width:36px;height:36px;border:0;border-radius:50%;background:#2a2a2a;color:#fff;font-size:22px;cursor:pointer}.body{padding:0 22px 22px}.title{font-weight:700;font-size:16px}.meta{color:#aaa;font-size:13px}.notice{padding:12px 14px;border-radius:12px;background:#242424;color:#cfcfcf;font-size:13px;line-height:1.45}.qualities{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.quality{border:1px solid #3d3d3d;border-radius:12px;padding:13px 14px;text-align:left;background:#222;color:#fff;cursor:pointer;font:600 14px Arial}.quality:hover:not(:disabled){border-color:#ff0033}.quality small{display:block;margin-top:4px;color:#aaa;font-weight:400}.quality:disabled{opacity:.38;cursor:not-allowed}.status{margin-top:18px;padding:14px;border-radius:12px;background:#222}.status[hidden]{display:none}.line{display:flex;justify-content:space-between;font-size:13px}.bar{height:8px;margin-top:10px;border-radius:999px;background:#3a3a3a;overflow:hidden}.bar i{display:block;height:100%;width:0;background:#ff0033}.error{margin-top:10px;color:#ff8d9f;font-size:13px;line-height:1.4;white-space:pre-wrap}.actions{display:flex;gap:8px;margin-top:12px}.secondary{border:1px solid #555;border-radius:9px;padding:8px 12px;background:transparent;color:#fff;cursor:pointer}@media(max-width:480px){.qualities{grid-template-columns:1fr}}
       </style>
-      <div class="overlay" role="dialog" aria-modal="true"><section class="card"><div class="head"><h2>Скачать видео</h2><button class="close" type="button" aria-label="Закрыть">×</button></div><div class="body"><p class="title"></p><p class="meta"></p><p class="notice"></p><div class="qualities"></div><div class="status" hidden><div class="line"><span class="state"></span><strong class="percent"></strong></div><div class="bar"><i></i></div><div class="error"></div><div class="actions"></div></div></div></section></div>`;
+      <div class="overlay" role="dialog" aria-modal="true"><section class="card"><div class="head"><h2>Скачать видео</h2><button class="close" type="button" aria-label="Закрыть">×</button></div><div class="body"><p class="title"></p><p class="meta"></p><p class="notice"></p><label class="filename-label">Имя файла<input class="filename" type="text" spellcheck="false" autocomplete="off"></label><div class="qualities"></div><div class="status" hidden><div class="line"><span class="state"></span><strong class="percent"></strong></div><div class="bar"><i></i></div><div class="error"></div><div class="actions"></div></div></div></section></div>`;
+    // inject filename styles
+    const style = shadow.querySelector('style');
+    if (style) {
+      style.textContent += '.filename-label{display:grid;gap:8px;margin:14px 0 16px;color:#ddd;font-size:13px}.filename{width:100%;border:1px solid #444;border-radius:10px;padding:11px 12px;background:#111;color:#fff;font:14px Arial}';
+    }
     shadow.querySelector('.close').addEventListener('click', closeModal);
     shadow.querySelector('.overlay').addEventListener('click', (event) => {
       if (event.target.classList.contains('overlay')) closeModal();
@@ -258,6 +263,33 @@
     if (['failed', 'recoverable'].includes(job.state)) addAction(actions, 'Повторить', 'YTD_RETRY_JOB', job.id, shadow);
   }
 
+  function defaultFilenameForMetadata(meta) {
+    if (!meta) return 'video.mp4';
+    if (typeof core.resolveRequestedFilename === 'function') {
+      return core.resolveRequestedFilename('', meta.title, meta.videoId);
+    }
+    if (typeof core.buildSuggestedFilename === 'function') {
+      return core.buildSuggestedFilename(meta.title || meta.videoId, meta.videoId);
+    }
+    return `${meta.videoId || 'video'}.mp4`;
+  }
+
+  function readRequestedFilename(shadow) {
+    const input = shadow.querySelector('.filename');
+    return String(input?.value || '').trim();
+  }
+
+  function syncFilenameField(shadow, force = false) {
+    const input = shadow.querySelector('.filename');
+    if (!input) return;
+    const nextDefault = defaultFilenameForMetadata(metadata);
+    if (force || !input.dataset.userEdited || input.dataset.videoId !== (metadata?.videoId || '')) {
+      input.value = nextDefault;
+      input.dataset.userEdited = 'false';
+      input.dataset.videoId = metadata?.videoId || '';
+    }
+  }
+
   async function beginDownload(shadow, targetHeight) {
     const buttons = [...shadow.querySelectorAll('.quality')];
     buttons.forEach((button) => { button.disabled = true; });
@@ -273,7 +305,11 @@
         shadow.querySelector('.error').textContent = 'Метаданные ролика ещё не получены. Запустите видео и подождите.';
         return;
       }
-      const response = await send({ type: 'YTD_START_DOWNLOAD', payload: { metadata, targetHeight } });
+      const requestedFilename = readRequestedFilename(shadow);
+      const response = await send({
+        type: 'YTD_START_DOWNLOAD',
+        payload: { metadata, targetHeight, requestedFilename },
+      });
       if (response?.job) renderJob(shadow, response.job, response);
       if (!response?.ok) {
         shadow.querySelector('.state').textContent = 'Ошибка';
@@ -294,22 +330,36 @@
   function renderModal(shadow) {
     const qualities = shadow.querySelector('.qualities');
     qualities.replaceChildren();
+    const filenameInput = shadow.querySelector('.filename');
+    if (filenameInput && !filenameInput.dataset.bound) {
+      filenameInput.dataset.bound = 'true';
+      filenameInput.addEventListener('input', () => {
+        filenameInput.dataset.userEdited = 'true';
+      });
+    }
     if (!extensionAlive) {
       shadow.querySelector('.title').textContent = 'Требуется обновление вкладки';
       shadow.querySelector('.notice').textContent = invalidatedMessage();
+      if (filenameInput) filenameInput.value = '';
       return;
     }
     if (!metadata) {
       shadow.querySelector('.title').textContent = 'Получаю данные ролика…';
       shadow.querySelector('.notice').textContent = 'Запустите воспроизведение на 1–2 секунды, если данные не появляются.';
+      if (filenameInput) {
+        filenameInput.value = '';
+        filenameInput.dataset.videoId = '';
+        filenameInput.dataset.userEdited = 'false';
+      }
       return;
     }
     shadow.querySelector('.title').textContent = metadata.title;
     shadow.querySelector('.meta').textContent = [metadata.channel, metadata.isShort ? 'Shorts' : null].filter(Boolean).join(' · ');
+    syncFilenameField(shadow, false);
     const best = core.selectNearestProgressiveMp4(metadata.formats, null);
     const observedCount = Array.isArray(metadata.observedUrls) ? metadata.observedUrls.length : 0;
     shadow.querySelector('.notice').textContent = best
-      ? `Скачивается готовый MP4 с H.264 и AAC. Если выбранного качества нет, будет использовано ближайшее ниже.${observedCount ? ` Активных медиатокенов: ${observedCount}.` : ' Запустите ролик на 2–3 секунды перед скачиванием.'}`
+      ? `Скачивается готовый MP4 с H.264 и AAC. Можно изменить имя файла ниже. Если выбранного качества нет, будет использовано ближайшее ниже.${observedCount ? ` Активных медиатокенов: ${observedCount}.` : ' Запустите ролик на 2–3 секунды перед скачиванием.'}`
       : 'YouTube не предоставил готовый совместимый MP4. Раздельные дорожки появятся в Phase 2.';
     const options = [
       {
@@ -348,6 +398,7 @@
   async function openModal() {
     const shadow = createModal();
     renderModal(shadow);
+    syncFilenameField(shadow, true);
     requestMetadata();
     try {
       const response = await send({ type: 'YTD_LIST_JOBS' });
@@ -371,6 +422,7 @@
     metadata = null;
     activeJob = null;
     document.getElementById(BUTTON_ID)?.remove();
+    // Close modal so previous title/filename cannot linger across SPA navigations.
     closeModal();
     scheduleMount();
     requestMetadata();

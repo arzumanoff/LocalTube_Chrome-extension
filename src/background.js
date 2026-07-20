@@ -11,7 +11,7 @@ importScripts(
 
 const {
   selectNearestProgressiveMp4,
-  buildSuggestedFilename,
+  resolveRequestedFilename,
   createDownloadJob,
   applyDownloadDelta,
   reconcileDownloadState,
@@ -23,6 +23,7 @@ const {
   resolveMediaUrl,
   extractPlaybackTokens,
   ensureMp4Filename,
+  createPendingFilenameEntry,
   findForcedFilename,
 } = self.YTDCore;
 
@@ -30,6 +31,7 @@ const STORAGE_KEY = 'downloadJobs';
 const MAX_STORED_JOBS = 100;
 const TOKEN_MAX_AGE_MS = 30000;
 const tabTokens = new Map();
+/** @type {Map<string, object>} pending filename entries keyed by entry id */
 const pendingFilenames = new Map();
 /** @type {Map<string, { url: string, updatedAt: number }>} */
 const activeSourceUrls = new Map();
@@ -158,18 +160,32 @@ function freshTabTokens(tabId) {
   return { n: entry.n || '', pot: entry.pot || '' };
 }
 
-function rememberForcedFilename(url, filename) {
-  pendingFilenames.set(String(url), {
-    url: String(url),
+function rememberForcedFilename(jobId, url, filename) {
+  const entry = createPendingFilenameEntry({
+    jobId,
+    url,
     filename: ensureMp4Filename(filename),
     expiresAt: Date.now() + 60000,
   });
+  pendingFilenames.set(entry.id, entry);
+  return entry;
+}
+
+function bindPendingDownloadId(entryId, downloadId) {
+  const entry = pendingFilenames.get(String(entryId || ''));
+  if (!entry || !Number.isInteger(downloadId)) return;
+  entry.downloadId = downloadId;
+  pendingFilenames.set(entry.id, entry);
+}
+
+function forgetPendingEntry(entryId) {
+  pendingFilenames.delete(String(entryId || ''));
 }
 
 function forgetExpiredFilenames() {
   const now = Date.now();
-  for (const [url, entry] of pendingFilenames.entries()) {
-    if (entry.expiresAt <= now) pendingFilenames.delete(url);
+  for (const [id, entry] of pendingFilenames.entries()) {
+    if (entry.expiresAt <= now) pendingFilenames.delete(id);
   }
 }
 
@@ -187,16 +203,18 @@ async function markJobFailed(job, errorCode) {
 
 async function launchBrowserDownload(job, sourceUrl) {
   const filename = ensureMp4Filename(job.suggestedFilename);
-  rememberForcedFilename(sourceUrl, filename);
+  const pending = rememberForcedFilename(job.id, sourceUrl, filename);
   try {
-    return await chromeCall(chrome.downloads.download, chrome.downloads, {
+    const downloadId = await chromeCall(chrome.downloads.download, chrome.downloads, {
       url: sourceUrl,
       filename,
       conflictAction: 'uniquify',
       saveAs: true,
     });
+    bindPendingDownloadId(pending.id, downloadId);
+    return downloadId;
   } catch (error) {
-    pendingFilenames.delete(String(sourceUrl));
+    forgetPendingEntry(pending.id);
     throw error;
   }
 }
@@ -233,13 +251,19 @@ async function startDownload(payload, tabId) {
     return { ok: false, errorCode: resolved.errorCode, message: errorMessage(resolved.errorCode) };
   }
 
+  const suggestedFilename = resolveRequestedFilename(
+    payload.requestedFilename,
+    payload.metadata.title,
+    payload.metadata.videoId,
+  );
+
   let job = createDownloadJob({
     id: createJobId(),
     videoId: payload.metadata.videoId,
     title: payload.metadata.title,
     targetHeight: payload.targetHeight,
     selectedFormat: resolved.selectedFormat,
-    suggestedFilename: buildSuggestedFilename(payload.metadata.title, payload.metadata.videoId),
+    suggestedFilename,
   });
   rememberActiveSourceUrl(job.id, resolved.selectedFormat.url);
   await upsertJob(job);
@@ -416,12 +440,11 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   forgetExpiredFilenames();
-  const filename = findForcedFilename(downloadItem, [...pendingFilenames.values()]);
-  if (!filename) return;
-  suggest({ filename, conflictAction: 'uniquify' });
-  for (const [url, entry] of pendingFilenames.entries()) {
-    if (entry.filename === filename) pendingFilenames.delete(url);
-  }
+  const match = findForcedFilename(downloadItem, [...pendingFilenames.values()]);
+  if (!match || !match.filename) return;
+  suggest({ filename: match.filename, conflictAction: 'uniquify' });
+  // Remove only the exact pending entry that matched this download.
+  if (match.entryId) forgetPendingEntry(match.entryId);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -465,6 +488,9 @@ chrome.downloads.onChanged.addListener((delta) => {
     const updated = applyDownloadDelta(job, delta, Date.now());
     if (updated.state === 'completed' || updated.state === 'failed') {
       forgetActiveSourceUrl(job.id);
+      for (const [id, entry] of pendingFilenames.entries()) {
+        if (entry.downloadId === delta.id || entry.jobId === job.id) pendingFilenames.delete(id);
+      }
     }
     await upsertJob(updated);
     await broadcastJob(updated);

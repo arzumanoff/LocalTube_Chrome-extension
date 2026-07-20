@@ -5,24 +5,46 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function downloadFactory() {
   function ensureMp4Filename(filename, fallback = 'video.mp4') {
     const raw = String(filename || '').trim() || String(fallback || 'video.mp4');
-    const withoutTrailingDots = raw.replace(/[. ]+$/g, '');
-    if (/\.mp4$/i.test(withoutTrailingDots)) return withoutTrailingDots;
-    const strippedKnown = withoutTrailingDots.replace(/\.(txt|html?|json|bin|download)$/i, '');
-    const base = strippedKnown || 'video';
+    // Reject path-like input by keeping only the last segment.
+    const leaf = raw.replace(/\\/g, '/').split('/').filter(Boolean).pop() || raw;
+    const withoutTrailingDots = leaf.replace(/[. ]+$/g, '');
+    let base = withoutTrailingDots;
+    while (/\.mp4$/i.test(base)) base = base.replace(/\.mp4$/i, '');
+    base = base.replace(/\.(txt|html?|json|bin|download|crdownload)$/i, '');
+    base = base.replace(/[. ]+$/g, '').trim() || 'video';
     return `${base}.mp4`;
   }
 
+  function createPendingFilenameEntry(input) {
+    return {
+      id: String(input.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      jobId: String(input.jobId || ''),
+      url: String(input.url || ''),
+      filename: ensureMp4Filename(input.filename || 'video.mp4'),
+      downloadId: Number.isInteger(input.downloadId) ? input.downloadId : null,
+      expiresAt: Number(input.expiresAt || Date.now() + 60000),
+    };
+  }
+
   function findForcedFilename(downloadItem, pendingEntries) {
-    const urls = [downloadItem && downloadItem.finalUrl, downloadItem && downloadItem.url]
-      .filter(Boolean)
-      .map(String);
-    for (const entry of Array.isArray(pendingEntries) ? pendingEntries : []) {
-      if (!entry) continue;
-      if (urls.includes(String(entry.url || ''))) {
-        return ensureMp4Filename(entry.filename || '');
+    const entries = Array.isArray(pendingEntries) ? pendingEntries.filter(Boolean) : [];
+    if (!downloadItem || !entries.length) return { filename: '', entryId: '' };
+
+    const downloadId = Number.isInteger(downloadItem.id) ? downloadItem.id : null;
+    if (downloadId != null) {
+      const byId = entries.find((entry) => entry.downloadId === downloadId);
+      if (byId) {
+        return { filename: ensureMp4Filename(byId.filename || ''), entryId: byId.id };
       }
     }
-    return '';
+
+    const urls = [downloadItem.finalUrl, downloadItem.url].filter(Boolean).map(String);
+    const byUrl = entries.find((entry) => urls.includes(String(entry.url || '')));
+    if (byUrl) {
+      return { filename: ensureMp4Filename(byUrl.filename || ''), entryId: byUrl.id };
+    }
+
+    return { filename: '', entryId: '' };
   }
 
   function isExtensionContextInvalidated(error) {
@@ -34,6 +56,7 @@
 
   return {
     ensureMp4Filename,
+    createPendingFilenameEntry,
     findForcedFilename,
     isExtensionContextInvalidated,
   };

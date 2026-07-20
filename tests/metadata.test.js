@@ -53,7 +53,12 @@ test('extracts metadata and prefers ANDROID progressive URLs', () => {
     response,
     'https://www.youtube.com/watch?v=abc123',
     observedUrls,
-    { downloadFormats: androidFormats, downloadClient: 'ANDROID' },
+    {
+      expectedVideoId: 'abc123',
+      downloadFormats: androidFormats,
+      downloadClient: 'ANDROID',
+      downloadDetails: response.videoDetails,
+    },
   );
   assert.equal(metadata.videoId, 'abc123');
   assert.equal(metadata.title, 'Test video');
@@ -68,8 +73,10 @@ test('extracts metadata and prefers ANDROID progressive URLs', () => {
 
 test('marks Shorts from the current URL', () => {
   const metadata = extractPlayerMetadata(response, 'https://www.youtube.com/shorts/abc123', [], {
+    expectedVideoId: 'abc123',
     downloadFormats: androidFormats,
     downloadClient: 'ANDROID',
+    downloadDetails: response.videoDetails,
   });
   assert.equal(metadata.isShort, true);
 });
@@ -108,14 +115,25 @@ test('token-enriched metadata still passes strict message validation', () => {
     url: 'https://r2.googlevideo.com/videoplayback?pot=token&itag=399',
     observedAt: 1,
     itag: '399',
-  }], { downloadFormats: androidFormats, downloadClient: 'ANDROID' });
-  assert.deepEqual(validateStartDownloadPayload({ metadata, targetHeight: 360 }), { ok: true });
+  }], {
+    expectedVideoId: 'abc123',
+    downloadFormats: androidFormats,
+    downloadClient: 'ANDROID',
+    downloadDetails: response.videoDetails,
+  });
+  assert.deepEqual(validateStartDownloadPayload({
+    metadata,
+    targetHeight: 360,
+    requestedFilename: '',
+  }), { ok: true });
 });
 
 test('progressive 360p format is exposed for download selection', () => {
   const metadata = extractPlayerMetadata(response, 'https://www.youtube.com/watch?v=abc123', [], {
+    expectedVideoId: 'abc123',
     downloadFormats: androidFormats,
     downloadClient: 'ANDROID',
+    downloadDetails: response.videoDetails,
   });
   assert.equal(metadata.formats.some((f) => f.height === 360 && f.hasAudio && f.hasVideo), true);
 });

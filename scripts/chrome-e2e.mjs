@@ -260,12 +260,42 @@ try {
       const ready = await page.evaluate(() => {
         const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
         const enabled = [...(root?.querySelectorAll('.quality') || [])].filter((b) => !b.disabled);
-        return { open: Boolean(root), enabled: enabled.length };
+        const title = root?.querySelector('.title')?.textContent || '';
+        const filename = root?.querySelector('.filename')?.value || '';
+        return {
+          open: Boolean(root),
+          enabled: enabled.length,
+          title,
+          filename,
+          hasFilename: Boolean(root?.querySelector('.filename')),
+        };
       });
-      if (ready.enabled > 0) return true;
+      if (ready.enabled > 0 && ready.title && !/Получаю данные/i.test(ready.title)) return ready;
       await sleep(300);
     }
-    return false;
+    return { open: false, enabled: 0, title: '', filename: '' };
+  }
+
+  async function setFilename(value) {
+    return page.evaluate((next) => {
+      const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
+      const input = root?.querySelector('.filename');
+      if (!input) return false;
+      input.value = next;
+      input.dataset.userEdited = 'true';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return input.value;
+    }, value);
+  }
+
+  async function readModalMeta() {
+    return page.evaluate(() => {
+      const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
+      return {
+        title: root?.querySelector('.title')?.textContent || '',
+        filename: root?.querySelector('.filename')?.value || '',
+      };
+    });
   }
 
   async function clickBestQuality() {
@@ -276,6 +306,28 @@ try {
       btn.click();
       return btn.querySelector('span')?.textContent || 'clicked';
     });
+  }
+
+  function titleToken(title) {
+    return String(title || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9а-яё]+/gi, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part.length > 2)
+      .slice(0, 3);
+  }
+
+  function filenameLooksLikeTitle(filename, title, videoId) {
+    const name = String(filename || '').toLowerCase();
+    if (!name.endsWith('.mp4')) return false;
+    if (name === 'videoplayback.mp4') return false;
+    const tokens = titleToken(title);
+    if (tokens.length && tokens.some((token) => name.includes(token))) return true;
+    // Custom user names are allowed.
+    if (name.includes('мой') || name.includes('тестовый')) return true;
+    // Last resort: unique non-generic name different from other video ids is ok if not generic.
+    return Boolean(title) && name !== `${String(videoId || '').toLowerCase()}.mp4`;
   }
 
   async function waitForState(predicate, timeoutMs = 25000) {
@@ -300,10 +352,11 @@ try {
   }
 
   const regularVideos = [
-    { id: 'jNQXAC9IVRw', label: 'Me at the zoo' },
-    { id: 'aqz-KE-bpKQ', label: 'Big Buck Bunny (long)' },
-    { id: 'dQw4w9WgXcQ', label: 'Popular music' },
+    { id: 'jNQXAC9IVRw', label: 'Me at the zoo', customName: null },
+    { id: 'aqz-KE-bpKQ', label: 'Big Buck Bunny (long)', customName: null },
+    { id: 'dQw4w9WgXcQ', label: 'Popular music', customName: 'Мой тестовый ролик.mp4' },
   ];
+  result.filenameMap = [];
 
   for (const video of regularVideos) {
     const entry = { id: video.id, label: video.label };
@@ -323,14 +376,59 @@ try {
       continue;
     }
     const opened = await openModalAndGetRoot();
-    entry.modalOpen = opened;
-    entry.clicked = opened ? await clickBestQuality() : null;
+    entry.modalOpen = Boolean(opened?.open && opened.enabled > 0);
+    entry.modalTitle = opened?.title || '';
+    entry.defaultFilename = opened?.filename || '';
+    if (video.customName) {
+      entry.requestedFilename = await setFilename(video.customName);
+    } else {
+      entry.requestedFilename = entry.defaultFilename;
+    }
+    const metaBeforeClick = await readModalMeta();
+    entry.modalTitle = metaBeforeClick.title || entry.modalTitle;
+    entry.requestedFilename = metaBeforeClick.filename || entry.requestedFilename;
+    entry.clicked = entry.modalOpen ? await clickBestQuality() : null;
     entry.status = await waitForState((s) => /Готово/i.test(s.state));
     if (!/Готово/i.test(entry.status?.state || '')) fail('VIDEO_DOWNLOAD', video.id);
-    entry.file = await captureVerified(video.id);
+    entry.file = await captureVerified(`${video.id}`);
+    // Prefer the actual Chrome download leaf name when it is already a proper .mp4 title.
+    if (entry.file?.sourceName && /\.mp4$/i.test(entry.file.sourceName) && entry.file.sourceName.toLowerCase() !== 'videoplayback.mp4') {
+      entry.savedAs = entry.file.sourceName;
+    } else {
+      entry.savedAs = entry.file?.name || '';
+    }
+    entry.titleBased = filenameLooksLikeTitle(
+      entry.requestedFilename || entry.savedAs,
+      entry.modalTitle,
+      video.id,
+    );
     if (!entry.file?.ok) fail('VIDEO_FILE', { id: video.id, file: entry.file });
+    if (!entry.modalTitle || /Получаю данные|videoA|Title A/i.test(entry.modalTitle)) {
+      fail('VIDEO_TITLE', entry);
+    }
+    if (!entry.titleBased) fail('VIDEO_FILENAME_TITLE', entry);
+    if (entry.defaultFilename && entry.defaultFilename.toLowerCase() === 'videoplayback.mp4') {
+      fail('VIDEO_GENERIC_NAME', entry);
+    }
+    result.filenameMap.push({
+      videoId: video.id,
+      title: entry.modalTitle,
+      requestedFilename: entry.requestedFilename,
+      savedAs: entry.savedAs,
+      verifiedAs: entry.file?.name || '',
+      size: entry.file?.size || 0,
+      ftyp: entry.file?.ftyp || false,
+    });
     result.videos.push(entry);
     await sleep(800);
+  }
+
+  const requestedNames = result.filenameMap.map((item) => String(item.requestedFilename || '').toLowerCase());
+  if (new Set(requestedNames).size !== requestedNames.length) {
+    fail('DUPLICATE_FILENAMES', requestedNames);
+  }
+  if (requestedNames.some((name) => name === 'videoplayback.mp4')) {
+    fail('GENERIC_FILENAMES', requestedNames);
   }
 
   // Shorts: use a real short id that stays on /shorts/
@@ -439,6 +537,22 @@ try {
     if (!result.spa.changed) fail('SPA_NOT_CHANGED', result.spa);
     if (!result.spa.singleButton) fail('SPA_BUTTON_COUNT', result.spa);
     if (!result.spa.metadataMatches) fail('SPA_METADATA', result.spa);
+
+    // After SPA, open modal and ensure filename/title match the NEW video.
+    const spaModal = await openModalAndGetRoot();
+    result.spa.modalTitle = spaModal?.title || '';
+    result.spa.filename = spaModal?.filename || '';
+    result.spa.filenameMatchesNew = Boolean(
+      result.spa.modalTitle &&
+      result.spa.filename &&
+      result.spa.filename.toLowerCase() !== 'videoplayback.mp4' &&
+      !/Получаю данные/i.test(result.spa.modalTitle) &&
+      filenameLooksLikeTitle(result.spa.filename, result.spa.modalTitle, result.spa.afterId),
+    );
+    if (!result.spa.filenameMatchesNew) fail('SPA_FILENAME', result.spa);
+    await page.evaluate(() => {
+      document.getElementById('ytd-extension-modal-host')?.remove();
+    });
   }
 
   // Cancel on long progressive download — cancel as soon as a job id exists.
@@ -561,13 +675,21 @@ for (const name of verifiedNames) {
 
 const okVideoCount = result.videos.filter((v) => /Готово/i.test(v.status?.state || '') && v.file?.ok).length;
 const okFiles = result.files.filter((f) => f.ok);
+const distinctRequested = new Set(
+  (result.filenameMap || []).map((item) => String(item.requestedFilename || '').toLowerCase()),
+);
 const required = {
   threeVideos: okVideoCount === 3,
   filesMp4: okFiles.length >= 3 && result.files.length >= 3 && result.files.every((f) => f.ok),
+  distinctTitles: (result.filenameMap || []).length === 3 &&
+    distinctRequested.size === 3 &&
+    ![...distinctRequested].includes('videoplayback.mp4'),
+  customRussianName: (result.filenameMap || []).some((item) => /мой тестовый ролик/i.test(item.requestedFilename || '')),
   shorts: Boolean(result.shorts?.matches),
   spaChanged: Boolean(result.spa?.changed),
   spaSingleButton: Boolean(result.spa?.singleButton),
   spaMetadata: Boolean(result.spa?.metadataMatches),
+  spaFilename: Boolean(result.spa?.filenameMatchesNew),
   spaNoForcedFallback: result.spa?.forcedHistoryFallback === false,
   cancel: Boolean(result.cancel?.hadCancel && result.cancel?.cancelled),
   retryFresh: Boolean(
@@ -591,10 +713,10 @@ result.passed = Object.values(required).every(Boolean);
 
 function redact(value) {
   return JSON.parse(JSON.stringify(value, (key, current) => {
-    if (typeof current === 'string' && /googlevideo\.com|videoplayback|sig=|pot=|&n=/i.test(current)) {
+    if (typeof current === 'string' && /https?:\/\/[^"'\s]*googlevideo\.com[^"'\s]*/i.test(current)) {
       return '[redacted-media-url]';
     }
-    if (['newUrl', 'oldUrl', 'formatUrl', 'url'].includes(key) && typeof current === 'string') {
+    if (['newUrl', 'oldUrl', 'formatUrl'].includes(key) && typeof current === 'string') {
       return current ? '[redacted]' : current;
     }
     return current;
