@@ -194,54 +194,51 @@
 
   async function readResponsePrefix(response, maxBytes = DEFAULT_PREFIX_BYTES) {
     const limit = Math.max(1, Math.min(Number(maxBytes) || DEFAULT_PREFIX_BYTES, 8192));
+    if (!response || !response.body || typeof response.body.getReader !== 'function') {
+      return {
+        ok: false,
+        errorCode: 'MEDIA_PROBE_FAILED',
+        bytes: new Uint8Array(0),
+        bytesRead: 0,
+        cancelled: false,
+      };
+    }
+
     const chunks = [];
     let total = 0;
     let cancelled = false;
-
-    if (response && response.body && typeof response.body.getReader === 'function') {
-      const reader = response.body.getReader();
-      try {
-        while (total < limit) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value || !value.length) continue;
-          const remaining = limit - total;
-          if (value.length <= remaining) {
-            chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
-            total += value.length;
-          } else {
-            chunks.push((value instanceof Uint8Array ? value : new Uint8Array(value)).subarray(0, remaining));
-            total += remaining;
-            try {
-              await reader.cancel();
-              cancelled = true;
-            } catch {
-              cancelled = true;
-            }
-            break;
-          }
-        }
-        if (!cancelled && total >= limit) {
+    const reader = response.body.getReader();
+    try {
+      while (total < limit) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || !value.length) continue;
+        const remaining = limit - total;
+        if (value.length <= remaining) {
+          chunks.push(value instanceof Uint8Array ? value : new Uint8Array(value));
+          total += value.length;
+        } else {
+          chunks.push((value instanceof Uint8Array ? value : new Uint8Array(value)).subarray(0, remaining));
+          total += remaining;
           try {
             await reader.cancel();
             cancelled = true;
           } catch {
             cancelled = true;
           }
+          break;
         }
-      } finally {
-        try { reader.releaseLock?.(); } catch { /* ignore */ }
       }
-    } else if (response && typeof response.arrayBuffer === 'function') {
-      // Test/fallback Response without a stream body — still hard-cap size.
-      const buffer = await response.arrayBuffer();
-      const view = new Uint8Array(buffer);
-      const slice = view.subarray(0, Math.min(view.length, limit));
-      chunks.push(slice);
-      total = slice.length;
-      cancelled = view.length > limit;
-    } else {
-      return { bytes: new Uint8Array(0), bytesRead: 0, cancelled: false };
+      if (!cancelled && total >= limit) {
+        try {
+          await reader.cancel();
+          cancelled = true;
+        } catch {
+          cancelled = true;
+        }
+      }
+    } finally {
+      try { reader.releaseLock?.(); } catch { /* ignore */ }
     }
 
     const out = new Uint8Array(total);
@@ -250,7 +247,13 @@
       out.set(chunk, offset);
       offset += chunk.length;
     }
-    return { bytes: out, bytesRead: total, cancelled };
+    return {
+      ok: true,
+      errorCode: null,
+      bytes: out,
+      bytesRead: total,
+      cancelled,
+    };
   }
 
   async function probeMediaUrl(url, fetchImpl, options = {}) {
@@ -267,17 +270,19 @@
         cache: 'no-store',
         redirect: 'follow',
       });
-      let bytes = new Uint8Array(0);
+      let prefix;
       try {
-        const prefix = await readResponsePrefix(response, maxBytes);
-        bytes = prefix.bytes;
+        prefix = await readResponsePrefix(response, maxBytes);
       } catch {
-        bytes = new Uint8Array(0);
+        return { ok: false, errorCode: 'MEDIA_PROBE_FAILED' };
+      }
+      if (!prefix.ok) {
+        return { ok: false, errorCode: prefix.errorCode || 'MEDIA_PROBE_FAILED' };
       }
       return classifyMediaProbe(
         response.status,
         response.headers?.get?.('content-type') || response.headers?.get?.('Content-Type') || '',
-        bytes,
+        prefix.bytes,
       );
     } catch {
       return { ok: false, errorCode: 'MEDIA_PROBE_FAILED' };

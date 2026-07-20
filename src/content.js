@@ -8,6 +8,7 @@
   const TARGETS = [2160, 1440, 1080, 720, 480, 360];
   const core = globalThis.YTDCore;
   let metadata = null;
+  let metadataRevision = 0;
   let activeJob = null;
   let lastUrl = location.href;
   let lastVideoId = '';
@@ -190,16 +191,18 @@
     return '';
   }
 
-  async function waitForFreshMetadata(expectedVideoId, attempts = 8) {
-    requestMetadata();
-    for (let i = 0; i < attempts; i += 1) {
-      if (metadata?.videoId && (!expectedVideoId || metadata.videoId === expectedVideoId)) {
-        return metadata;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      requestMetadata();
+  async function waitForFreshMetadata(expectedVideoId, options = {}) {
+    if (typeof core.waitForFreshMetadata === 'function') {
+      return core.waitForFreshMetadata({
+        getRevision: () => metadataRevision,
+        getMetadata: () => metadata,
+        requestMetadata,
+        expectedVideoId,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+      });
     }
-    return metadata;
+    return { ok: false, errorCode: 'RETRY_METADATA_REQUIRED', metadata: null, revision: metadataRevision };
   }
 
   function addAction(container, label, type, jobId, shadow) {
@@ -213,17 +216,15 @@
         if (type === 'YTD_RETRY_JOB') {
           const expectedId = activeJob?.videoId || metadata?.videoId || lastVideoId;
           const fresh = await waitForFreshMetadata(expectedId);
-          if (!fresh?.videoId) {
-            shadow.querySelector('.error').textContent = 'Не удалось получить свежие метаданные. Откройте исходный ролик и повторите.';
-            return;
-          }
-          if (expectedId && fresh.videoId !== expectedId) {
-            shadow.querySelector('.error').textContent = 'Откройте исходный ролик и повторите.';
+          if (!fresh.ok) {
+            shadow.querySelector('.error').textContent = fresh.errorCode === 'RETRY_VIDEO_MISMATCH'
+              ? 'Откройте исходный ролик и повторите.'
+              : 'Не удалось получить свежие метаданные. Откройте исходный ролик и повторите.';
             return;
           }
           response = await send({
             type,
-            payload: { jobId, metadata: fresh },
+            payload: { jobId, metadata: fresh.metadata },
           });
         } else {
           response = await send({ type, payload: { jobId } });
@@ -377,10 +378,104 @@
 
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
+
+    // E2E bridge: page world <-> content script
+    if (event.data?.channel === 'ytd-e2e' && event.data?.requestId) {
+      (async () => {
+        const { requestId, type, payload } = event.data;
+        let result = { ok: false };
+        try {
+          switch (type) {
+            case 'GET_STATE':
+              result = {
+                ok: true,
+                metadataRevision,
+                videoId: metadata?.videoId || lastVideoId || '',
+                hasMetadata: Boolean(metadata),
+                formatUrl: metadata?.formats?.[0]?.url || '',
+                activeJob: activeJob ? {
+                  id: activeJob.id,
+                  videoId: activeJob.videoId,
+                  state: activeJob.state,
+                  errorCode: activeJob.errorCode,
+                } : null,
+              };
+              break;
+            case 'WAIT_FRESH_META':
+              result = await waitForFreshMetadata(payload?.expectedVideoId || lastVideoId || metadata?.videoId || '', {
+                timeoutMs: payload?.timeoutMs,
+                pollMs: payload?.pollMs,
+              });
+              if (result.ok) {
+                result.formatUrl = result.metadata?.formats?.[0]?.url || '';
+              }
+              break;
+            case 'MARK_JOB_FAILED':
+              result = await send({
+                type: 'YTD_MARK_JOB_FAILED',
+                payload: {
+                  jobId: payload?.jobId || activeJob?.id || '',
+                  errorCode: payload?.errorCode || 'E2E_FORCED_FAILURE',
+                },
+              });
+              if (result?.job) activeJob = result.job;
+              break;
+            case 'CANCEL_JOB':
+              result = await send({
+                type: 'YTD_CANCEL_JOB',
+                payload: { jobId: payload?.jobId || activeJob?.id || '' },
+              });
+              if (result?.job) activeJob = result.job;
+              break;
+            case 'RETRY_ACTIVE': {
+              const expectedId = activeJob?.videoId || metadata?.videoId || lastVideoId;
+              const fresh = await waitForFreshMetadata(expectedId, {
+                timeoutMs: payload?.timeoutMs,
+              });
+              if (!fresh.ok) {
+                result = fresh;
+                break;
+              }
+              result = await send({
+                type: 'YTD_RETRY_JOB',
+                payload: { jobId: activeJob?.id || payload?.jobId || '', metadata: fresh.metadata },
+              });
+              result.metadataRevision = fresh.revision;
+              result.previousRevision = fresh.previousRevision;
+              result.formatUrl = fresh.metadata?.formats?.[0]?.url || '';
+              if (result?.job) activeJob = result.job;
+              break;
+            }
+            case 'RETRY_MISMATCH': {
+              const mismatched = metadata
+                ? { ...metadata, videoId: payload?.videoId || 'mismatched-video-id' }
+                : null;
+              if (!mismatched || !activeJob?.id) {
+                result = { ok: false, errorCode: 'JOB_NOT_FOUND' };
+                break;
+              }
+              result = await send({
+                type: 'YTD_RETRY_JOB',
+                payload: { jobId: activeJob.id, metadata: mismatched },
+              });
+              break;
+            }
+            default:
+              result = { ok: false, errorCode: 'UNKNOWN_E2E_COMMAND' };
+          }
+        } catch (error) {
+          result = { ok: false, error: String(error && error.message || error) };
+        }
+        window.postMessage({ channel: 'ytd-e2e-response', requestId, result }, location.origin);
+      })();
+      return;
+    }
+
     if (event.data?.source !== SOURCE || event.data?.type !== 'YTD_PLAYER_METADATA' || !event.data.payload) return;
     const next = event.data.payload;
     if (lastVideoId && next.videoId && next.videoId !== lastVideoId) return;
     metadata = next;
+    metadataRevision += 1;
     lastVideoId = next.videoId || lastVideoId;
     scheduleMount();
     const modal = document.getElementById(MODAL_ID);

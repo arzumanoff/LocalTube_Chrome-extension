@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouTube Video Downloader",
   "short_name": "YT Downloader",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "minimum_chrome_version": "120",
   "description": "Добавляет кнопку скачивания разрешённых к загрузке YouTube-видео в MP4.",
   "permissions": [
@@ -27,6 +27,7 @@
         "src/core/quality.js",
         "src/core/filename.js",
         "src/core/download.js",
+        "src/core/metadata-wait.js",
         "src/content.js"
       ],
       "run_at": "document_idle"

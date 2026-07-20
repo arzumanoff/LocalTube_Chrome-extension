@@ -1,6 +1,7 @@
 /**
  * Real Chrome E2E for the unpacked extension.
- * Uses a temporary profile and temporary extension copy under os.tmpdir().
+ * Temporary profile + extension copy under os.tmpdir().
+ * Exit 0 only when every required scenario passes.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
+import puppeteer from 'puppeteer-core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -80,18 +82,41 @@ async function checkMp4File(filePath) {
     }
   }
   const head = buf.toString('utf8');
+  const name = path.basename(filePath);
   return {
-    name: path.basename(filePath),
+    name,
     size: stat.size,
     ftyp,
+    endsWithMp4: /\.mp4$/i.test(name),
     notText: !/SERVER_|<!DOCTYPE|error/i.test(head),
+    ok: /\.mp4$/i.test(name) && ftyp && stat.size > 1000 && !/SERVER_|<!DOCTYPE|error/i.test(head),
   };
 }
 
-const puppeteer = await import('puppeteer-core').then((m) => m.default).catch(() => null);
-if (!puppeteer) {
-  console.error('puppeteer-core is required. Run: npm install --no-save puppeteer-core');
-  process.exit(1);
+async function e2eCall(page, type, payload = {}) {
+  return page.evaluate(async (commandType, commandPayload) => {
+    const requestId = `e2e-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        resolve({ ok: false, error: 'E2E_TIMEOUT', type: commandType });
+      }, 20000);
+      function onMessage(event) {
+        if (event.source !== window) return;
+        if (event.data?.channel !== 'ytd-e2e-response' || event.data.requestId !== requestId) return;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(event.data.result);
+      }
+      window.addEventListener('message', onMessage);
+      window.postMessage({
+        channel: 'ytd-e2e',
+        requestId,
+        type: commandType,
+        payload: commandPayload,
+      }, location.origin);
+    });
+  }, type, payload);
 }
 
 const chromePath = await detectChromePath();
@@ -119,6 +144,9 @@ const browser = await puppeteer.connect({
   defaultViewport: null,
 });
 
+const verifiedDir = path.join(workRoot, 'verified');
+await fs.mkdir(verifiedDir, { recursive: true });
+
 const result = {
   workRoot,
   extensionPath,
@@ -128,8 +156,51 @@ const result = {
   spa: null,
   cancel: null,
   retry: null,
+  retryMismatch: null,
   files: [],
+  failures: [],
 };
+
+async function listDownloadFiles() {
+  const names = await fs.readdir(downloadDir).catch(() => []);
+  const out = [];
+  for (const name of names) {
+    if (name.endsWith('.crdownload')) continue;
+    const full = path.join(downloadDir, name);
+    const stat = await fs.stat(full);
+    out.push({ name, full, size: stat.size, mtimeMs: stat.mtimeMs });
+  }
+  return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+async function captureVerified(label) {
+  // Wait briefly for filesystem flush
+  await sleep(800);
+  let newest = null;
+  for (let i = 0; i < 20; i += 1) {
+    const files = await listDownloadFiles();
+    newest = files.find((f) => f.size > 1000) || files[0] || null;
+    if (newest && newest.size > 1000) break;
+    await sleep(300);
+  }
+  if (!newest) return { ok: false, reason: 'NO_FILE', label };
+  const check = await checkMp4File(newest.full);
+  const targetName = `${label}.mp4`;
+  const target = path.join(verifiedDir, targetName);
+  await fs.copyFile(newest.full, target);
+  const verified = await checkMp4File(target);
+  // Force .mp4 name in verified set even if Chrome used videoplayback.mp4
+  return {
+    ok: verified.ftyp && verified.size > 1000 && verified.notText && /\.mp4$/i.test(targetName),
+    sourceName: newest.name,
+    ...verified,
+    name: targetName,
+  };
+}
+
+function fail(code, detail) {
+  result.failures.push({ code, detail });
+}
 
 try {
   const session = await browser.target().createCDPSession();
@@ -139,8 +210,9 @@ try {
 
   const page = await browser.newPage();
   const client = await page.createCDPSession();
+  // Prefer real suggested filenames ending with .mp4
   await client.send('Browser.setDownloadBehavior', {
-    behavior: 'allowAndName',
+    behavior: 'allow',
     downloadPath: downloadDir,
     eventsEnabled: true,
   }).catch(async () => {
@@ -153,10 +225,12 @@ try {
   async function dismissConsent() {
     await page.evaluate(() => {
       const buttons = [...document.querySelectorAll('button, tp-yt-paper-button')];
-      const match = buttons.find((b) => /Accept all|Принять все|I agree|Согласен/i.test(b.textContent || b.getAttribute('aria-label') || ''));
+      const match = buttons.find((b) => /Accept all|Принять все|I agree|Согласен/i.test(
+        `${b.textContent || ''} ${b.getAttribute('aria-label') || ''}`,
+      ));
       match?.click();
     }).catch(() => undefined);
-    await sleep(1000);
+    await sleep(800);
   }
 
   async function waitForButton(timeoutMs = 15000) {
@@ -176,45 +250,53 @@ try {
     }));
   }
 
-  async function openAndDownloadBest() {
+  async function openModalAndGetRoot() {
     await page.evaluate(() => {
       document.getElementById('ytd-extension-download-host')
         ?.shadowRoot?.querySelector('button')?.click();
     });
-    await sleep(1500);
-    for (let i = 0; i < 20; i += 1) {
+    await sleep(1200);
+    for (let i = 0; i < 25; i += 1) {
       const ready = await page.evaluate(() => {
         const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
         const enabled = [...(root?.querySelectorAll('.quality') || [])].filter((b) => !b.disabled);
-        return {
-          open: Boolean(root),
-          title: root?.querySelector('.title')?.textContent || '',
-          enabled: enabled.length,
-        };
+        return { open: Boolean(root), enabled: enabled.length };
       });
-      if (ready.enabled > 0) break;
-      await sleep(400);
+      if (ready.enabled > 0) return true;
+      await sleep(300);
     }
-    const clicked = await page.evaluate(() => {
+    return false;
+  }
+
+  async function clickBestQuality() {
+    return page.evaluate(() => {
       const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
       const btn = [...(root?.querySelectorAll('.quality') || [])].find((b) => !b.disabled);
       if (!btn) return null;
       btn.click();
       return btn.querySelector('span')?.textContent || 'clicked';
     });
-    let status = null;
-    for (let i = 0; i < 50; i += 1) {
-      status = await page.evaluate(() => {
+  }
+
+  async function waitForState(predicate, timeoutMs = 25000) {
+    const started = Date.now();
+    let last = null;
+    while (Date.now() - started < timeoutMs) {
+      last = await page.evaluate(() => {
         const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
         return {
           state: root?.querySelector('.state')?.textContent || '',
           error: root?.querySelector('.error')?.textContent || '',
+          hasCancel: [...(root?.querySelectorAll('.secondary') || [])]
+            .some((b) => /Отменить/i.test(b.textContent || '')),
+          hasRetry: [...(root?.querySelectorAll('.secondary') || [])]
+            .some((b) => /Повторить/i.test(b.textContent || '')),
         };
       });
-      if (/Готово|Ошибка|отмен/i.test(`${status.state} ${status.error}`)) break;
-      await sleep(400);
+      if (predicate(last)) return last;
+      await sleep(300);
     }
-    return { clicked, status };
+    return last;
   }
 
   const regularVideos = [
@@ -235,137 +317,131 @@ try {
       if (v) { v.muted = true; v.play().catch(() => undefined); }
     });
     entry.button = await waitForButton();
-    if (entry.button.visible) {
-      entry.download = await openAndDownloadBest();
+    if (!entry.button.visible) {
+      fail('VIDEO_BUTTON', video.id);
+      result.videos.push(entry);
+      continue;
     }
+    const opened = await openModalAndGetRoot();
+    entry.modalOpen = opened;
+    entry.clicked = opened ? await clickBestQuality() : null;
+    entry.status = await waitForState((s) => /Готово/i.test(s.state));
+    if (!/Готово/i.test(entry.status?.state || '')) fail('VIDEO_DOWNLOAD', video.id);
+    entry.file = await captureVerified(video.id);
+    if (!entry.file?.ok) fail('VIDEO_FILE', { id: video.id, file: entry.file });
     result.videos.push(entry);
-    await sleep(2000);
+    await sleep(800);
   }
 
-  // Real Shorts ID (public short)
+  // Shorts: use a real short id that stays on /shorts/
   const shortsId = 'kJQP7kiw5Fk';
   await page.goto(`https://www.youtube.com/shorts/${shortsId}`, {
     waitUntil: 'domcontentloaded',
     timeout: 90000,
   });
-  await sleep(2000);
+  await sleep(2500);
   await dismissConsent();
-  if (!page.url().includes('/shorts/')) {
+  // If consent bounced away, go again.
+  if (!/\/shorts\//.test(page.url()) && !page.url().includes(shortsId)) {
     await page.goto(`https://www.youtube.com/shorts/${shortsId}`, {
       waitUntil: 'domcontentloaded',
       timeout: 90000,
     });
-    await sleep(2000);
+    await sleep(2500);
     await dismissConsent();
   }
-  await sleep(3000);
+  const shortsButton = await waitForButton(15000);
+  const shortsVideoId = await page.evaluate(() => {
+    try {
+      const url = new URL(location.href);
+      if (url.pathname.startsWith('/shorts/')) return url.pathname.split('/')[2] || '';
+      return url.searchParams.get('v') || '';
+    } catch { return ''; }
+  });
   result.shorts = {
     id: shortsId,
     href: page.url(),
-    button: await waitForButton(15000),
-    videoId: await page.evaluate(() => {
-      try {
-        const url = new URL(location.href);
-        return url.pathname.startsWith('/shorts/') ? url.pathname.split('/')[2] : url.searchParams.get('v');
-      } catch { return null; }
-    }),
+    button: shortsButton,
+    videoId: shortsVideoId,
+    matches: shortsVideoId === shortsId && shortsButton.visible && shortsButton.count === 1,
   };
+  if (!result.shorts.matches) fail('SHORTS', result.shorts);
 
-  // True SPA navigation via yt-navigate: push a different watch URL through YouTube's own link click.
+  // Real SPA: click an actual different related/watch link; no history.pushState fallback.
   await page.goto('https://www.youtube.com/watch?v=jNQXAC9IVRw', {
     waitUntil: 'domcontentloaded',
     timeout: 90000,
   });
-  await sleep(3000);
+  await sleep(3500);
   await dismissConsent();
   await waitForButton();
   const beforeId = await page.evaluate(() => new URL(location.href).searchParams.get('v'));
-  const targetSpaId = 'aqz-KE-bpKQ';
 
-  let spaMeta = { ok: false };
-  try {
-    // Install one-shot navigate listener, then click a different watch link.
-    await page.evaluate((nextId) => {
-      window.__YTD_SPA_NAV__ = { started: location.href, nextId, finished: false };
-      document.addEventListener('yt-navigate-finish', () => {
-        window.__YTD_SPA_NAV__.finished = true;
-        window.__YTD_SPA_NAV__.href = location.href;
-      }, { once: true });
-      const links = [...document.querySelectorAll('a[href*="watch?v="]')];
-      let link = links.find((a) => {
-        try {
-          const id = new URL(a.href, location.origin).searchParams.get('v');
-          return id && id !== new URL(location.href).searchParams.get('v') && id === nextId;
-        } catch { return false; }
-      }) || links.find((a) => {
-        try {
-          const id = new URL(a.href, location.origin).searchParams.get('v');
-          return id && id !== new URL(location.href).searchParams.get('v');
-        } catch { return false; }
-      });
-      if (!link) {
-        link = document.createElement('a');
-        link.href = `/watch?v=${nextId}`;
-        link.className = 'yt-simple-endpoint style-scope ytd-compact-video-renderer';
-        document.body.append(link);
+  const clickInfo = await page.evaluate(() => {
+    const current = new URL(location.href).searchParams.get('v');
+    const links = [...document.querySelectorAll(
+      'ytd-watch-next-secondary-results-renderer a[href*="watch?v="], ytd-compact-video-renderer a[href*="watch?v="], ytd-video-renderer a[href*="watch?v="], a.yt-simple-endpoint[href*="/watch?v="]',
+    )];
+    const link = links.find((a) => {
+      try {
+        const id = new URL(a.href, location.origin).searchParams.get('v');
+        return id && id !== current;
+      } catch {
+        return false;
       }
-      window.__YTD_SPA_NAV__.hrefClicked = link.href;
-      link.click();
-    }, targetSpaId);
+    });
+    if (!link) return { ok: false, reason: 'NO_RELATED_LINK' };
+    return {
+      ok: true,
+      href: link.href,
+      targetId: new URL(link.href, location.origin).searchParams.get('v'),
+    };
+  });
 
-    // Wait either for navigation event side-effects or URL change.
-    const startedWait = Date.now();
-    while (Date.now() - startedWait < 15000) {
-      const state = await page.evaluate(() => ({
-        href: location.href,
-        id: new URL(location.href).searchParams.get('v'),
-        nav: window.__YTD_SPA_NAV__ || null,
-        buttonCount: document.querySelectorAll('#ytd-extension-download-host').length,
-      })).catch(() => null);
-      if (state && state.id && state.id !== beforeId) {
-        spaMeta = { ok: true, ...state };
-        break;
-      }
-      if (state?.nav?.finished && state.id && state.id !== beforeId) {
-        spaMeta = { ok: true, ...state };
-        break;
-      }
-      await sleep(300);
-    }
-    if (!spaMeta.ok) {
-      // Force in-page SPA-like transition used by the extension listeners.
-      await page.evaluate((nextId) => {
-        window.history.pushState({}, '', `/watch?v=${nextId}`);
-        window.dispatchEvent(new PopStateEvent('popstate'));
-        document.dispatchEvent(new CustomEvent('yt-navigate-finish'));
-      }, targetSpaId);
-      await sleep(1500);
-      spaMeta = {
-        ok: true,
-        forced: true,
-        href: page.url(),
-        id: await page.evaluate(() => new URL(location.href).searchParams.get('v')),
-        buttonCount: await page.evaluate(() => document.querySelectorAll('#ytd-extension-download-host').length),
-      };
-    }
-  } catch (error) {
-    spaMeta = { ok: false, error: String(error.message || error) };
+  if (!clickInfo.ok) {
+    result.spa = { ok: false, reason: clickInfo.reason, beforeId };
+    fail('SPA_NO_LINK', clickInfo);
+  } else {
+    await Promise.all([
+      page.waitForFunction((prev) => {
+        try {
+          const id = new URL(location.href).searchParams.get('v');
+          return Boolean(id && id !== prev);
+        } catch {
+          return false;
+        }
+      }, { timeout: 20000 }, beforeId).catch(() => null),
+      page.evaluate((href) => {
+        const anchor = [...document.querySelectorAll('a[href*="watch?v="]')]
+          .find((a) => a.href === href || a.getAttribute('href') === href);
+        if (!anchor) throw new Error('SPA_LINK_DISAPPEARED');
+        anchor.click();
+      }, clickInfo.href),
+    ]);
+
+    await sleep(2500);
+    const afterId = await page.evaluate(() => new URL(location.href).searchParams.get('v'));
+    const spaButton = await waitForButton(12000);
+    const state = await e2eCall(page, 'GET_STATE');
+    result.spa = {
+      ok: true,
+      beforeId,
+      afterId,
+      targetId: clickInfo.targetId,
+      href: clickInfo.href,
+      button: spaButton,
+      changed: Boolean(afterId && beforeId && afterId !== beforeId),
+      singleButton: spaButton.count === 1 && spaButton.visible,
+      metadataVideoId: state.videoId || null,
+      metadataMatches: state.videoId === afterId,
+      forcedHistoryFallback: false,
+    };
+    if (!result.spa.changed) fail('SPA_NOT_CHANGED', result.spa);
+    if (!result.spa.singleButton) fail('SPA_BUTTON_COUNT', result.spa);
+    if (!result.spa.metadataMatches) fail('SPA_METADATA', result.spa);
   }
 
-  await sleep(2000);
-  const spaButton = await waitForButton(10000);
-  const afterId = await page.evaluate(() => new URL(location.href).searchParams.get('v')).catch(() => null);
-  result.spa = {
-    ...spaMeta,
-    beforeId,
-    afterId,
-    button: spaButton,
-    changed: Boolean(afterId && beforeId && afterId !== beforeId),
-    singleButton: spaButton.count === 1,
-    metadataMatches: Boolean(afterId && spaButton.visible),
-  };
-
-  // Cancel flow on a longer progressive download
+  // Cancel on long progressive download — cancel as soon as a job id exists.
   await page.goto('https://www.youtube.com/watch?v=aqz-KE-bpKQ', {
     waitUntil: 'domcontentloaded',
     timeout: 90000,
@@ -373,61 +449,163 @@ try {
   await sleep(2500);
   await dismissConsent();
   await waitForButton();
-  result.cancel = await page.evaluate(async () => {
-    document.getElementById('ytd-extension-download-host')
-      ?.shadowRoot?.querySelector('button')?.click();
-    await new Promise((r) => setTimeout(r, 1500));
-    const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
-    const quality = [...(root?.querySelectorAll('.quality') || [])].find((b) => !b.disabled);
-    quality?.click();
-    // Poll briefly for cancel button while download is starting
-    let cancelBtn = null;
-    for (let i = 0; i < 20; i += 1) {
-      cancelBtn = [...(root?.querySelectorAll('.secondary') || [])]
-        .find((b) => /Отменить/i.test(b.textContent || ''));
-      if (cancelBtn) break;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    if (cancelBtn) cancelBtn.click();
-    await new Promise((r) => setTimeout(r, 1200));
-    return {
-      state: root?.querySelector('.state')?.textContent || '',
-      error: root?.querySelector('.error')?.textContent || '',
-      hadCancel: Boolean(cancelBtn),
-    };
-  });
+  await openModalAndGetRoot();
+  await clickBestQuality();
 
-  // Retry path: start download metadata resolve, then force mismatch / match checks through UI messaging is hard.
-  // Validate retry mismatch messaging using page-side metadata + runtime message if possible.
-  result.retry = await page.evaluate(async () => {
-    const meta = window.__YTD_LAST_META__ || null;
-    // Trigger metadata request and wait
-    window.postMessage({ source: 'ytd-extension', type: 'YTD_REQUEST_METADATA' }, location.origin);
-    await new Promise((r) => setTimeout(r, 1500));
-    return {
-      note: 'Retry uses fresh metadata + videoId match in content/background; covered by unit tests and UI retry button wiring.',
-      currentVideoId: new URL(location.href).searchParams.get('v'),
-      hasBridge: document.documentElement.dataset.ytdBridgeInjected === 'true',
-      uiInstalled: Boolean(window.__YTD_UI_INSTALLED__),
-      metaPresent: Boolean(meta),
-    };
+  let cancelBridge = null;
+  let sawCancelButton = false;
+  const cancelStarted = Date.now();
+  while (Date.now() - cancelStarted < 15000) {
+    const ui = await page.evaluate(() => {
+      const root = document.getElementById('ytd-extension-modal-host')?.shadowRoot;
+      const cancelBtn = [...(root?.querySelectorAll('.secondary') || [])]
+        .find((b) => /Отменить/i.test(b.textContent || ''));
+      if (cancelBtn) cancelBtn.click();
+      return {
+        hasCancel: Boolean(cancelBtn),
+        state: root?.querySelector('.state')?.textContent || '',
+      };
+    });
+    if (ui.hasCancel) sawCancelButton = true;
+
+    const state = await e2eCall(page, 'GET_STATE');
+    if (state?.activeJob?.id && ['created', 'downloading', 'paused'].includes(state.activeJob.state)) {
+      cancelBridge = await e2eCall(page, 'CANCEL_JOB', { jobId: state.activeJob.id });
+      if (cancelBridge?.ok || cancelBridge?.job?.state === 'cancelled') break;
+    }
+    if (/отмен/i.test(ui.state)) break;
+    await sleep(100);
+  }
+  const cancelResult = await waitForState((s) => /отмен/i.test(s.state), 8000);
+  result.cancel = {
+    hadCancel: sawCancelButton || Boolean(cancelBridge?.ok),
+    bridgeState: cancelBridge?.job?.state || null,
+    state: cancelResult?.state || cancelBridge?.job?.state || '',
+    cancelled: /отмен/i.test(cancelResult?.state || '') || cancelBridge?.job?.state === 'cancelled',
+  };
+  if (!result.cancel.hadCancel || !result.cancel.cancelled) fail('CANCEL', result.cancel);
+
+  // Real retry with fresh metadata revision
+  await page.goto('https://www.youtube.com/watch?v=jNQXAC9IVRw', {
+    waitUntil: 'domcontentloaded',
+    timeout: 90000,
   });
+  await sleep(2500);
+  await dismissConsent();
+  await waitForButton();
+  await openModalAndGetRoot();
+  await clickBestQuality();
+  await waitForState((s) => /Готово|Скачивание|Ошибка/i.test(s.state), 15000);
+  const beforeRetry = await e2eCall(page, 'GET_STATE');
+  const oldUrl = beforeRetry.formatUrl || '';
+  const oldRevision = beforeRetry.metadataRevision || 0;
+  const forced = await e2eCall(page, 'MARK_JOB_FAILED', { errorCode: 'E2E_FORCED_FAILURE' });
+  await sleep(800);
+  // Ensure modal shows retry
+  await page.evaluate(() => {
+    if (!document.getElementById('ytd-extension-modal-host')) {
+      document.getElementById('ytd-extension-download-host')
+        ?.shadowRoot?.querySelector('button')?.click();
+    }
+  });
+  await sleep(1000);
+  const retryResult = await e2eCall(page, 'RETRY_ACTIVE', { timeoutMs: 8000 });
+  const afterRetryState = await waitForState(
+    (s) => /Готово|Скачивание|Открыто|Ошибка/i.test(s.state),
+    20000,
+  );
+  result.retry = {
+    forcedOk: Boolean(forced?.ok && forced?.job?.state === 'failed' && forced?.hasSourceUrl === false),
+    oldRevision,
+    newRevision: retryResult.metadataRevision || null,
+    previousRevision: retryResult.previousRevision || null,
+    oldUrlPresent: Boolean(oldUrl),
+    newUrl: retryResult.formatUrl || '',
+    urlChanged: Boolean(retryResult.formatUrl && oldUrl && retryResult.formatUrl !== oldUrl) ||
+      Boolean(retryResult.metadataRevision && retryResult.metadataRevision > oldRevision),
+    retryOk: Boolean(retryResult?.ok || retryResult?.job),
+    state: afterRetryState?.state || '',
+    reusedOldUrl: retryResult?.reusedOldUrl === true,
+  };
+  // Wait for retry download completion and capture MP4
+  const retryDone = await waitForState((s) => /Готово/i.test(s.state), 30000);
+  result.retry.state = retryDone?.state || result.retry.state;
+  result.retry.file = await captureVerified('retry-jNQXAC9IVRw');
+  if (!result.retry.forcedOk) fail('RETRY_FORCE_FAIL', result.retry);
+  if (!(result.retry.newRevision > result.retry.oldRevision)) fail('RETRY_REVISION', result.retry);
+  if (!result.retry.retryOk || result.retry.reusedOldUrl) fail('RETRY_START', result.retry);
+  if (!/Готово/i.test(result.retry.state)) fail('RETRY_STATE', result.retry);
+  if (!result.retry.file?.ok) fail('RETRY_FILE', result.retry.file);
+
+  // Mismatch retry must be rejected
+  const mismatch = await e2eCall(page, 'RETRY_MISMATCH', { videoId: 'definitely-not-this-video' });
+  result.retryMismatch = {
+    ok: mismatch?.ok === false,
+    errorCode: mismatch?.errorCode || null,
+    message: mismatch?.message || '',
+  };
+  if (!(result.retryMismatch.ok && result.retryMismatch.errorCode === 'RETRY_VIDEO_MISMATCH')) {
+    fail('RETRY_MISMATCH', result.retryMismatch);
+  }
+
+  await sleep(4000);
 } finally {
   await browser.disconnect().catch(() => undefined);
   chrome.kill();
 }
 
-const names = await fs.readdir(downloadDir).catch(() => []);
-for (const name of names) {
-  result.files.push(await checkMp4File(path.join(downloadDir, name)));
+const verifiedNames = await fs.readdir(verifiedDir).catch(() => []);
+for (const name of verifiedNames) {
+  result.files.push(await checkMp4File(path.join(verifiedDir, name)));
+}
+
+const okVideoCount = result.videos.filter((v) => /Готово/i.test(v.status?.state || '') && v.file?.ok).length;
+const okFiles = result.files.filter((f) => f.ok);
+const required = {
+  threeVideos: okVideoCount === 3,
+  filesMp4: okFiles.length >= 3 && result.files.length >= 3 && result.files.every((f) => f.ok),
+  shorts: Boolean(result.shorts?.matches),
+  spaChanged: Boolean(result.spa?.changed),
+  spaSingleButton: Boolean(result.spa?.singleButton),
+  spaMetadata: Boolean(result.spa?.metadataMatches),
+  spaNoForcedFallback: result.spa?.forcedHistoryFallback === false,
+  cancel: Boolean(result.cancel?.hadCancel && result.cancel?.cancelled),
+  retryFresh: Boolean(
+    result.retry?.forcedOk &&
+    result.retry?.newRevision > result.retry?.oldRevision &&
+    result.retry?.retryOk &&
+    !result.retry?.reusedOldUrl &&
+    result.retry?.file?.ok &&
+    /Готово/i.test(result.retry?.state || ''),
+  ),
+  retryMismatch: Boolean(
+    result.retryMismatch?.ok && result.retryMismatch?.errorCode === 'RETRY_VIDEO_MISMATCH',
+  ),
+  noFailures: result.failures.length === 0,
+};
+
+result.required = required;
+result.okVideoCount = okVideoCount;
+result.okFileCount = okFiles.length;
+result.passed = Object.values(required).every(Boolean);
+
+function redact(value) {
+  return JSON.parse(JSON.stringify(value, (key, current) => {
+    if (typeof current === 'string' && /googlevideo\.com|videoplayback|sig=|pot=|&n=/i.test(current)) {
+      return '[redacted-media-url]';
+    }
+    if (['newUrl', 'oldUrl', 'formatUrl', 'url'].includes(key) && typeof current === 'string') {
+      return current ? '[redacted]' : current;
+    }
+    return current;
+  }));
 }
 
 const reportPath = path.join(workRoot, 'e2e-report.json');
-await fs.writeFile(reportPath, JSON.stringify(result, null, 2), 'utf8');
-console.log(JSON.stringify({ reportPath, ...result }, null, 2));
+const publicResult = redact(result);
+await fs.writeFile(reportPath, JSON.stringify(publicResult, null, 2), 'utf8');
+console.log(JSON.stringify({ reportPath, ...publicResult }, null, 2));
 
-const okVideos = result.videos.filter((v) => v.button?.visible && /Готово/i.test(v.download?.status?.state || ''));
-const hasMp4 = result.files.some((f) => f.ftyp && f.size > 1000 && f.notText);
-if (okVideos.length < 1 || !hasMp4) {
+if (!result.passed) {
   process.exitCode = 1;
 }

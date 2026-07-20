@@ -152,6 +152,7 @@ test('readResponsePrefix bounds a huge HTTP 200 stream and cancels the reader', 
   ], 200, 'video/mp4');
 
   const result = await readResponsePrefix(response, 1024);
+  assert.equal(result.ok, true);
   assert.equal(result.bytesRead <= 1024, true);
   assert.equal(result.bytes.length <= 1024, true);
   assert.equal(result.cancelled, true);
@@ -161,19 +162,30 @@ test('readResponsePrefix bounds a huge HTTP 200 stream and cancels the reader', 
   assert.equal(looksLikeMp4(result.bytes), true);
 });
 
-test('readResponsePrefix hard-caps arrayBuffer fallback responses', async () => {
-  const giant = new Uint8Array(4096);
-  giant.set(mp4Prefix(), 0);
-  giant.fill(1, 32);
-  const response = {
+test('readResponsePrefix fails when response body/getReader is missing', async () => {
+  const result = await readResponsePrefix({
     status: 200,
     headers: { get: () => 'video/mp4' },
-    arrayBuffer: async () => giant.buffer,
-  };
+    arrayBuffer: async () => {
+      throw new Error('arrayBuffer must not be used');
+    },
+  }, 128);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'MEDIA_PROBE_FAILED');
+  assert.equal(result.bytesRead, 0);
+});
+
+test('readResponsePrefix hard-caps a ReadableStream body and cancels leftover chunks', async () => {
+  const first = mp4Prefix();
+  const rest = new Uint8Array(4096);
+  rest.fill(9);
+  const response = makeStreamResponse([first, rest, new Uint8Array([1, 2, 3])], 200, 'video/mp4');
   const result = await readResponsePrefix(response, 128);
-  assert.equal(result.bytesRead, 128);
-  assert.equal(result.bytes.length, 128);
+  assert.equal(result.ok, true);
+  assert.equal(result.bytesRead <= 128, true);
   assert.equal(result.cancelled, true);
+  assert.equal(response.cancelled, true);
+  assert.equal(looksLikeMp4(result.bytes), true);
 });
 
 test('uses the raw URL when a bounded media probe succeeds', async () => {

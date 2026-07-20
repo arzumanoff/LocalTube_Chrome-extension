@@ -29,6 +29,7 @@ const referenced = new Set([
   'src/core/download.js',
   'src/core/innertube.js',
   'src/core/metadata.js',
+  'src/core/metadata-wait.js',
   'src/core/messages.js',
   'src/core/jobs.js',
 ]);

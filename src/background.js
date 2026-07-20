@@ -294,6 +294,20 @@ async function cancelJob(jobId) {
   return { ok: true, job: updated };
 }
 
+async function markJobFailedById(jobId, errorCode = 'E2E_FORCED_FAILURE') {
+  const jobs = await readJobs();
+  const job = jobs.find((item) => item.id === String(jobId || ''));
+  if (!job) return { ok: false, errorCode: 'JOB_NOT_FOUND', message: errorMessage('JOB_NOT_FOUND') };
+  if (Number.isInteger(job.downloadId)) {
+    try { await chromeCall(chrome.downloads.cancel, chrome.downloads, job.downloadId); } catch { /* optional */ }
+  }
+  forgetActiveSourceUrl(job.id);
+  const failed = await markJobFailed(job, errorCode || 'E2E_FORCED_FAILURE');
+  // Ensure no signed URL remains associated with the failed job.
+  forgetActiveSourceUrl(failed.id);
+  return { ok: true, job: failed, hasSourceUrl: false };
+}
+
 async function retryJob(payload, tabId) {
   const validation = validateRetryDownloadPayload(payload);
   if (!validation.ok) {
@@ -426,6 +440,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return cancelJob(String(message.payload?.jobId || ''));
       case 'YTD_RETRY_JOB':
         return retryJob(message.payload, sender.tab?.id);
+      case 'YTD_MARK_JOB_FAILED':
+        return markJobFailedById(
+          String(message.payload?.jobId || ''),
+          String(message.payload?.errorCode || 'E2E_FORCED_FAILURE'),
+        );
       case 'YTD_PING':
         return { ok: true, version: chrome.runtime.getManifest().version };
       default:
