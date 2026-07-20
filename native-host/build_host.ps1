@@ -18,6 +18,8 @@ $VenvPython = Join-Path $Venv "Scripts\python.exe"
   --clean `
   --onefile `
   --name "media-engine-host" `
+  --collect-all yt_dlp `
+  --collect-all yt_dlp_ejs `
   --distpath (Join-Path $Root "dist") `
   --workpath (Join-Path $Root "build") `
   --specpath (Join-Path $Root "build") `
