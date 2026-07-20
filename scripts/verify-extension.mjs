@@ -17,6 +17,7 @@ assert(manifest.manifest_version === 3, 'manifest_version must be 3');
 assert(manifest.background?.service_worker, 'background service worker is required');
 assert(manifest.permissions?.includes('downloads'), 'downloads permission is required');
 assert(manifest.permissions?.includes('storage'), 'storage permission is required');
+assert(manifest.permissions?.includes('webRequest'), 'webRequest permission is required for PO-token capture');
 assert(!JSON.stringify(manifest).includes('http://'), 'manifest must not grant insecure HTTP origins');
 
 const referenced = new Set([
@@ -24,6 +25,7 @@ const referenced = new Set([
   ...manifest.content_scripts.flatMap((entry) => entry.js || []),
   ...manifest.web_accessible_resources.flatMap((entry) => entry.resources || []),
   ...Object.values(manifest.icons || {}),
+  'src/core/download.js',
 ]);
 
 for (const relative of referenced) {
