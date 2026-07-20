@@ -14,6 +14,10 @@ const payload = {
   metadata: {
     videoId: 'abc', title: 'Video', channel: 'Channel', durationSeconds: 10,
     isLive: false, isShort: false, formats: [format],
+    observedUrls: [{
+      url: 'https://r2---sn.googlevideo.com/videoplayback?itag=137&n=working',
+      observedAt: 100,
+    }],
   },
   targetHeight: 720,
 };
@@ -37,4 +41,13 @@ test('rejects untrusted media URLs', () => {
   const bad = JSON.parse(JSON.stringify(payload));
   bad.metadata.formats[0].url = 'https://evil.test/file.mp4';
   assert.equal(validateStartDownloadPayload(bad).ok, false);
+});
+
+test('rejects untrusted observed player URLs', () => {
+  const bad = JSON.parse(JSON.stringify(payload));
+  bad.metadata.observedUrls[0].url = 'https://evil.test/videoplayback';
+  assert.deepEqual(validateStartDownloadPayload(bad), {
+    ok: false,
+    errorCode: 'INVALID_OBSERVED_URL',
+  });
 });
