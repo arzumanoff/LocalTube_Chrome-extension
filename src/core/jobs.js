@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function jobsFactory() {
   const PERSISTED_JOB_KEYS = [
     'id', 'videoId', 'title', 'targetHeight', 'resolvedHeight', 'selectedItag',
-    'suggestedFilename', 'state', 'downloadId', 'bytesReceived', 'totalBytes',
+    'suggestedFilename', 'actualFilename', 'state', 'downloadId', 'bytesReceived', 'totalBytes',
     'errorCode', 'createdAt', 'updatedAt', 'completedAt',
   ];
 
@@ -19,6 +19,7 @@
       resolvedHeight: Number(input.selectedFormat.height),
       selectedItag: Number(input.selectedFormat.itag),
       suggestedFilename: String(input.suggestedFilename),
+      actualFilename: null,
       state: 'created',
       downloadId: null,
       bytesReceived: 0,

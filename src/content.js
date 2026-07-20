@@ -450,6 +450,8 @@
                   videoId: activeJob.videoId,
                   state: activeJob.state,
                   errorCode: activeJob.errorCode,
+                  suggestedFilename: activeJob.suggestedFilename || null,
+                  actualFilename: activeJob.actualFilename || null,
                 } : null,
               };
               break;
@@ -478,6 +480,9 @@
                 payload: { jobId: payload?.jobId || activeJob?.id || '' },
               });
               if (result?.job) activeJob = result.job;
+              break;
+            case 'FILENAME_DIAGNOSTICS':
+              result = await send({ type: 'YTD_FILENAME_DIAGNOSTICS' });
               break;
             case 'RETRY_ACTIVE': {
               const expectedId = activeJob?.videoId || metadata?.videoId || lastVideoId;

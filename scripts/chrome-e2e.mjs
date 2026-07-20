@@ -125,6 +125,25 @@ const extensionPath = path.join(workRoot, 'extension');
 const profileDir = path.join(workRoot, 'profile');
 const downloadDir = path.join(workRoot, 'downloads');
 await fs.mkdir(downloadDir, { recursive: true });
+await fs.mkdir(path.join(profileDir, 'Default'), { recursive: true });
+// Use normal Chrome download prefs — CDP setDownloadBehavior forces GUID filenames
+// and hides the real Save As / downloads filename pipeline we need to verify.
+const prefsPath = path.join(profileDir, 'Default', 'Preferences');
+await fs.writeFile(prefsPath, JSON.stringify({
+  download: {
+    default_directory: downloadDir,
+    prompt_for_download: false,
+    directory_upgrade: true,
+  },
+  savefile: {
+    default_directory: downloadDir,
+  },
+  profile: {
+    default_content_setting_values: {
+      automatic_downloads: 1,
+    },
+  },
+}), 'utf8');
 await copyExtension(repoRoot, extensionPath);
 
 const port = await getFreePort();
@@ -144,9 +163,6 @@ const browser = await puppeteer.connect({
   defaultViewport: null,
 });
 
-const verifiedDir = path.join(workRoot, 'verified');
-await fs.mkdir(verifiedDir, { recursive: true });
-
 const result = {
   workRoot,
   extensionPath,
@@ -159,8 +175,10 @@ const result = {
   retryMismatch: null,
   files: [],
   failures: [],
+  actualFilenames: [],
 };
 
+/** Snapshot of filenames currently in the Chrome download directory. */
 async function listDownloadFiles() {
   const names = await fs.readdir(downloadDir).catch(() => []);
   const out = [];
@@ -173,28 +191,63 @@ async function listDownloadFiles() {
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-async function captureVerified(label) {
-  // Wait briefly for filesystem flush
-  await sleep(800);
-  let newest = null;
-  for (let i = 0; i < 20; i += 1) {
+function matchesExpectedFilename(actualName, expectedName) {
+  const actual = String(actualName || '').trim();
+  const expected = String(expectedName || '').trim();
+  if (!actual || !expected) return false;
+  if (/^videoplayback(\s*\(\d+\))?\.mp4$/i.test(actual)) return false;
+  if (actual.toLowerCase() === expected.toLowerCase()) return true;
+  const base = expected.replace(/\.mp4$/i, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${base}( \\(\\d+\\))?\\.mp4$`, 'i').test(actual);
+}
+
+/**
+ * Wait for a NEW original Chrome download file (no copy/rename).
+ * Compares directory snapshots before/after the download action.
+ */
+async function waitForOriginalDownload(beforeSnapshot, expectedFilename, timeoutMs = 45000) {
+  const beforeNames = new Set((beforeSnapshot || []).map((f) => f.name));
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
     const files = await listDownloadFiles();
-    newest = files.find((f) => f.size > 1000) || files[0] || null;
-    if (newest && newest.size > 1000) break;
-    await sleep(300);
+    // Only accept the ORIGINAL Chrome filename when it matches expected (or uniquify).
+    // Ignore .tmp / GUID placeholders that appear mid-download.
+    const hit = files.find((f) =>
+      f.size > 1000 &&
+      matchesExpectedFilename(f.name, expectedFilename) &&
+      !/\.(tmp|crdownload)$/i.test(f.name) &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.test(f.name)
+    );
+    if (hit) {
+      const check = await checkMp4File(hit.full);
+      const okName = matchesExpectedFilename(hit.name, expectedFilename);
+      if (check.ftyp && check.size > 1000 && check.notText && okName) {
+        return {
+          ok: true,
+          videoId: null,
+          expectedFilename,
+          actualFilename: hit.name,
+          actualPath: hit.full,
+          size: check.size,
+          ftyp: check.ftyp,
+          nameMatch: true,
+          isVideoplayback: false,
+        };
+      }
+    }
+    await sleep(400);
   }
-  if (!newest) return { ok: false, reason: 'NO_FILE', label };
-  const check = await checkMp4File(newest.full);
-  const targetName = `${label}.mp4`;
-  const target = path.join(verifiedDir, targetName);
-  await fs.copyFile(newest.full, target);
-  const verified = await checkMp4File(target);
-  // Force .mp4 name in verified set even if Chrome used videoplayback.mp4
+  const latest = (await listDownloadFiles())[0] || null;
   return {
-    ok: verified.ftyp && verified.size > 1000 && verified.notText && /\.mp4$/i.test(targetName),
-    sourceName: newest.name,
-    ...verified,
-    name: targetName,
+    ok: false,
+    reason: 'NO_MATCHING_ORIGINAL_FILE',
+    expectedFilename,
+    actualFilename: latest?.name || null,
+    actualPath: latest?.full || null,
+    size: latest?.size || 0,
+    ftyp: false,
+    nameMatch: false,
+    isVideoplayback: latest ? /^videoplayback/i.test(latest.name) : false,
   };
 }
 
@@ -209,18 +262,8 @@ try {
   await sleep(1500);
 
   const page = await browser.newPage();
-  const client = await page.createCDPSession();
-  // Prefer real suggested filenames ending with .mp4
-  await client.send('Browser.setDownloadBehavior', {
-    behavior: 'allow',
-    downloadPath: downloadDir,
-    eventsEnabled: true,
-  }).catch(async () => {
-    await client.send('Page.setDownloadBehavior', {
-      behavior: 'allow',
-      downloadPath: downloadDir,
-    });
-  });
+  // Intentionally DO NOT call Browser.setDownloadBehavior — it renames files to GUIDs
+  // and masks whether chrome.downloads kept the real title-based filename.
 
   async function dismissConsent() {
     await page.evaluate(() => {
@@ -237,17 +280,25 @@ try {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       await dismissConsent();
-      const ready = await page.evaluate(() => {
-        const nodes = document.querySelectorAll('#ytd-extension-download-host');
-        return { count: nodes.length, visible: nodes.length === 1 };
-      });
-      if (ready.visible) return ready;
+      try {
+        const ready = await page.evaluate(() => {
+          const nodes = document.querySelectorAll('#ytd-extension-download-host');
+          return { count: nodes.length, visible: nodes.length === 1 };
+        });
+        if (ready.visible) return ready;
+      } catch {
+        // Navigation/consent can destroy the execution context briefly.
+      }
       await sleep(300);
     }
-    return page.evaluate(() => ({
-      count: document.querySelectorAll('#ytd-extension-download-host').length,
-      visible: false,
-    }));
+    try {
+      return await page.evaluate(() => ({
+        count: document.querySelectorAll('#ytd-extension-download-host').length,
+        visible: false,
+      }));
+    } catch {
+      return { count: 0, visible: false };
+    }
   }
 
   async function openModalAndGetRoot() {
@@ -387,22 +438,26 @@ try {
     const metaBeforeClick = await readModalMeta();
     entry.modalTitle = metaBeforeClick.title || entry.modalTitle;
     entry.requestedFilename = metaBeforeClick.filename || entry.requestedFilename;
+    const beforeFiles = await listDownloadFiles();
     entry.clicked = entry.modalOpen ? await clickBestQuality() : null;
-    entry.status = await waitForState((s) => /Готово/i.test(s.state));
-    if (!/Готово/i.test(entry.status?.state || '')) fail('VIDEO_DOWNLOAD', video.id);
-    entry.file = await captureVerified(`${video.id}`);
-    // Prefer the actual Chrome download leaf name when it is already a proper .mp4 title.
-    if (entry.file?.sourceName && /\.mp4$/i.test(entry.file.sourceName) && entry.file.sourceName.toLowerCase() !== 'videoplayback.mp4') {
-      entry.savedAs = entry.file.sourceName;
-    } else {
-      entry.savedAs = entry.file?.name || '';
-    }
+    entry.expectedFilename = entry.requestedFilename;
+    // Prefer original on-disk evidence over UI state text (Save As / progress can lag).
+    entry.file = await waitForOriginalDownload(beforeFiles, entry.expectedFilename);
+    entry.status = await waitForState((s) => /Готово/i.test(s.state), 10000);
+    entry.file.videoId = video.id;
+    // The authoritative name is the ORIGINAL on-disk Chrome filename (no renames/copies).
+    entry.actualFilename = entry.file.actualFilename;
+    entry.diskFilename = entry.file.actualFilename;
+    entry.nameMatch = Boolean(entry.file.nameMatch);
+    if (!entry.file?.ok) fail('VIDEO_DOWNLOAD', { id: video.id, file: entry.file });
     entry.titleBased = filenameLooksLikeTitle(
-      entry.requestedFilename || entry.savedAs,
+      entry.expectedFilename,
       entry.modalTitle,
       video.id,
     );
-    if (!entry.file?.ok) fail('VIDEO_FILE', { id: video.id, file: entry.file });
+    if (!entry.file?.ok) fail('VIDEO_FILE', { id: video.id, file: entry.file, actualFilename: entry.actualFilename });
+    if (/^videoplayback/i.test(entry.actualFilename || '')) fail('VIDEO_PLAYBACK_NAME', entry);
+    if (!entry.nameMatch) fail('VIDEO_NAME_MISMATCH', entry);
     if (!entry.modalTitle || /Получаю данные|videoA|Title A/i.test(entry.modalTitle)) {
       fail('VIDEO_TITLE', entry);
     }
@@ -410,12 +465,21 @@ try {
     if (entry.defaultFilename && entry.defaultFilename.toLowerCase() === 'videoplayback.mp4') {
       fail('VIDEO_GENERIC_NAME', entry);
     }
+    result.actualFilenames.push({
+      videoId: video.id,
+      expectedFilename: entry.expectedFilename,
+      actualFilename: entry.actualFilename,
+      diskFilename: entry.diskFilename,
+      actualPath: entry.file.actualPath,
+      size: entry.file.size,
+      ftyp: entry.file.ftyp,
+    });
     result.filenameMap.push({
       videoId: video.id,
       title: entry.modalTitle,
-      requestedFilename: entry.requestedFilename,
-      savedAs: entry.savedAs,
-      verifiedAs: entry.file?.name || '',
+      expectedFilename: entry.expectedFilename,
+      actualFilename: entry.actualFilename,
+      diskFilename: entry.diskFilename,
       size: entry.file?.size || 0,
       ftyp: entry.file?.ftyp || false,
     });
@@ -423,12 +487,12 @@ try {
     await sleep(800);
   }
 
-  const requestedNames = result.filenameMap.map((item) => String(item.requestedFilename || '').toLowerCase());
-  if (new Set(requestedNames).size !== requestedNames.length) {
-    fail('DUPLICATE_FILENAMES', requestedNames);
+  const actualNames = result.actualFilenames.map((item) => String(item.actualFilename || '').toLowerCase());
+  if (actualNames.length === 3 && new Set(actualNames).size !== actualNames.length) {
+    fail('DUPLICATE_FILENAMES', actualNames);
   }
-  if (requestedNames.some((name) => name === 'videoplayback.mp4')) {
-    fail('GENERIC_FILENAMES', requestedNames);
+  if (actualNames.some((name) => /^videoplayback/i.test(name))) {
+    fail('GENERIC_FILENAMES', actualNames);
   }
 
   // Shorts: use a real short id that stays on /shorts/
@@ -623,11 +687,12 @@ try {
     }
   });
   await sleep(1000);
+  const retryBefore = await listDownloadFiles();
   const retryResult = await e2eCall(page, 'RETRY_ACTIVE', { timeoutMs: 8000 });
-  const afterRetryState = await waitForState(
-    (s) => /Готово|Скачивание|Открыто|Ошибка/i.test(s.state),
-    20000,
-  );
+  const retryDone = await waitForState((s) => /Готово/i.test(s.state), 30000);
+  // Expected name comes from the original job suggested filename (title-based).
+  const retryExpected = 'Me at the zoo.mp4';
+  const retryFile = await waitForOriginalDownload(retryBefore, retryExpected);
   result.retry = {
     forcedOk: Boolean(forced?.ok && forced?.job?.state === 'failed' && forced?.hasSourceUrl === false),
     oldRevision,
@@ -638,18 +703,22 @@ try {
     urlChanged: Boolean(retryResult.formatUrl && oldUrl && retryResult.formatUrl !== oldUrl) ||
       Boolean(retryResult.metadataRevision && retryResult.metadataRevision > oldRevision),
     retryOk: Boolean(retryResult?.ok || retryResult?.job),
-    state: afterRetryState?.state || '',
+    state: retryDone?.state || '',
     reusedOldUrl: retryResult?.reusedOldUrl === true,
+    expectedFilename: retryExpected,
+    actualFilename: retryFile?.actualFilename || null,
+    file: retryFile,
   };
-  // Wait for retry download completion and capture MP4
-  const retryDone = await waitForState((s) => /Готово/i.test(s.state), 30000);
-  result.retry.state = retryDone?.state || result.retry.state;
-  result.retry.file = await captureVerified('retry-jNQXAC9IVRw');
   if (!result.retry.forcedOk) fail('RETRY_FORCE_FAIL', result.retry);
   if (!(result.retry.newRevision > result.retry.oldRevision)) fail('RETRY_REVISION', result.retry);
   if (!result.retry.retryOk || result.retry.reusedOldUrl) fail('RETRY_START', result.retry);
   if (!/Готово/i.test(result.retry.state)) fail('RETRY_STATE', result.retry);
-  if (!result.retry.file?.ok) fail('RETRY_FILE', result.retry.file);
+  if (!result.retry.file?.ok || result.retry.file?.isVideoplayback || !result.retry.file?.nameMatch) {
+    fail('RETRY_FILE', result.retry.file);
+  }
+
+  // Safe filename diagnostics from the service worker (no media URLs).
+  result.filenameDiagnostics = await e2eCall(page, 'FILENAME_DIAGNOSTICS');
 
   // Mismatch retry must be rejected
   const mismatch = await e2eCall(page, 'RETRY_MISMATCH', { videoId: 'definitely-not-this-video' });
@@ -668,23 +737,21 @@ try {
   chrome.kill();
 }
 
-const verifiedNames = await fs.readdir(verifiedDir).catch(() => []);
-for (const name of verifiedNames) {
-  result.files.push(await checkMp4File(path.join(verifiedDir, name)));
+// Only original Chrome download-directory files — never renamed copies.
+const diskFiles = await listDownloadFiles();
+for (const file of diskFiles) {
+  result.files.push(await checkMp4File(file.full));
 }
 
-const okVideoCount = result.videos.filter((v) => /Готово/i.test(v.status?.state || '') && v.file?.ok).length;
-const okFiles = result.files.filter((f) => f.ok);
-const distinctRequested = new Set(
-  (result.filenameMap || []).map((item) => String(item.requestedFilename || '').toLowerCase()),
-);
+const okVideoCount = result.videos.filter((v) => v.file?.ok && v.nameMatch).length;
+const okOriginals = (result.actualFilenames || []).filter((f) => f.ftyp && f.size > 1000 && matchesExpectedFilename(f.actualFilename, f.expectedFilename));
+const distinctActual = new Set((result.actualFilenames || []).map((item) => String(item.actualFilename || '').toLowerCase()));
 const required = {
   threeVideos: okVideoCount === 3,
-  filesMp4: okFiles.length >= 3 && result.files.length >= 3 && result.files.every((f) => f.ok),
-  distinctTitles: (result.filenameMap || []).length === 3 &&
-    distinctRequested.size === 3 &&
-    ![...distinctRequested].includes('videoplayback.mp4'),
-  customRussianName: (result.filenameMap || []).some((item) => /мой тестовый ролик/i.test(item.requestedFilename || '')),
+  filesMp4: okOriginals.length >= 3,
+  noVideoplayback: (result.actualFilenames || []).every((f) => !/^videoplayback/i.test(f.actualFilename || '')),
+  distinctActualNames: distinctActual.size >= 3,
+  customRussianName: (result.actualFilenames || []).some((item) => /мой тестовый ролик/i.test(item.actualFilename || '')),
   shorts: Boolean(result.shorts?.matches),
   spaChanged: Boolean(result.spa?.changed),
   spaSingleButton: Boolean(result.spa?.singleButton),
@@ -708,7 +775,7 @@ const required = {
 
 result.required = required;
 result.okVideoCount = okVideoCount;
-result.okFileCount = okFiles.length;
+result.okFileCount = okOriginals.length;
 result.passed = Object.values(required).every(Boolean);
 
 function redact(value) {

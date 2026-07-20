@@ -24,17 +24,19 @@ const {
   extractPlaybackTokens,
   ensureMp4Filename,
   createPendingFilenameEntry,
-  findForcedFilename,
+  claimForcedFilename,
 } = self.YTDCore;
 
 const STORAGE_KEY = 'downloadJobs';
 const MAX_STORED_JOBS = 100;
 const TOKEN_MAX_AGE_MS = 30000;
 const tabTokens = new Map();
-/** @type {Map<string, object>} pending filename entries keyed by entry id */
+/** @type {Map<string, object>} pending filename entries keyed by entry id, insertion order = queue order */
 const pendingFilenames = new Map();
 /** @type {Map<string, { url: string, updatedAt: number }>} */
 const activeSourceUrls = new Map();
+/** Safe diagnostics for filename resolution (no media URLs/tokens). */
+const filenameDiagnostics = [];
 
 function chromeCall(method, context, ...args) {
   return new Promise((resolve, reject) => {
@@ -160,14 +162,34 @@ function freshTabTokens(tabId) {
   return { n: entry.n || '', pot: entry.pot || '' };
 }
 
-function rememberForcedFilename(jobId, url, filename) {
+function pushFilenameDiagnostic(entry) {
+  filenameDiagnostics.push({
+    at: Date.now(),
+    jobId: entry.jobId || null,
+    expectedFilename: entry.expectedFilename || null,
+    downloadId: Number.isInteger(entry.downloadId) ? entry.downloadId : null,
+    determiningFired: Boolean(entry.determiningFired),
+    matchFound: Boolean(entry.matchFound),
+    strategy: entry.strategy || 'none',
+    finalFilename: entry.finalFilename || null,
+  });
+  while (filenameDiagnostics.length > 40) filenameDiagnostics.shift();
+}
+
+function rememberForcedFilename(jobId, filename) {
   const entry = createPendingFilenameEntry({
     jobId,
-    url,
     filename: ensureMp4Filename(filename),
-    expiresAt: Date.now() + 60000,
+    expiresAt: Date.now() + 120000,
   });
   pendingFilenames.set(entry.id, entry);
+  pushFilenameDiagnostic({
+    jobId,
+    expectedFilename: entry.filename,
+    determiningFired: false,
+    matchFound: false,
+    strategy: 'queued',
+  });
   return entry;
 }
 
@@ -185,7 +207,7 @@ function forgetPendingEntry(entryId) {
 function forgetExpiredFilenames() {
   const now = Date.now();
   for (const [id, entry] of pendingFilenames.entries()) {
-    if (entry.expiresAt <= now) pendingFilenames.delete(id);
+    if (entry.expiresAt <= now || entry.claimed) pendingFilenames.delete(id);
   }
 }
 
@@ -201,20 +223,85 @@ async function markJobFailed(job, errorCode) {
   return failed;
 }
 
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error('OFFSCREEN_UNAVAILABLE');
+  }
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [chrome.runtime.getURL('src/offscreen.html')],
+  }).catch(() => []);
+  if (contexts && contexts.length) return;
+  await chrome.offscreen.createDocument({
+    url: 'src/offscreen.html',
+    reasons: ['BLOBS'],
+    justification: 'Create blob URLs so downloads keep the user-chosen .mp4 filename instead of videoplayback.',
+  });
+}
+
+async function createMediaBlobUrl(sourceUrl) {
+  await ensureOffscreenDocument();
+  const result = await chrome.runtime.sendMessage({
+    target: 'ytd-offscreen',
+    type: 'YTD_CREATE_BLOB_URL',
+    url: sourceUrl,
+  });
+  if (!result?.ok || !result.blobUrl) {
+    const code = result?.errorCode || 'MEDIA_PROBE_FAILED';
+    const error = new Error(errorMessage(code));
+    error.code = code;
+    throw error;
+  }
+  return result.blobUrl;
+}
+
+function revokeMediaBlobUrl(blobUrl) {
+  if (!blobUrl) return;
+  chrome.runtime.sendMessage({
+    target: 'ytd-offscreen',
+    type: 'YTD_REVOKE_BLOB_URL',
+    url: blobUrl,
+  }).catch(() => undefined);
+}
+
 async function launchBrowserDownload(job, sourceUrl) {
   const filename = ensureMp4Filename(job.suggestedFilename);
-  const pending = rememberForcedFilename(job.id, sourceUrl, filename);
+  // googlevideo paths are always named "videoplayback". Download a blob: URL instead so
+  // Chrome uses our sanitized filename in Save As and on disk.
+  const blobUrl = await createMediaBlobUrl(sourceUrl);
+  const pending = rememberForcedFilename(job.id, filename);
   try {
     const downloadId = await chromeCall(chrome.downloads.download, chrome.downloads, {
-      url: sourceUrl,
+      url: blobUrl,
       filename,
       conflictAction: 'uniquify',
       saveAs: true,
     });
     bindPendingDownloadId(pending.id, downloadId);
+
+    try {
+      const items = await chromeCall(chrome.downloads.search, chrome.downloads, { id: downloadId });
+      const item = items?.[0];
+      const finalName = item?.filename ? String(item.filename).split(/[/\\]/).pop() : null;
+      pushFilenameDiagnostic({
+        jobId: job.id,
+        expectedFilename: filename,
+        downloadId,
+        determiningFired: Boolean(pending.claimed),
+        matchFound: Boolean(pending.claimed) || Boolean(finalName && finalName === filename),
+        strategy: 'blob-url',
+        finalFilename: finalName,
+      });
+    } catch {
+      /* diagnostics are best-effort */
+    }
+
+    // Keep blob alive briefly for the download pipeline, then revoke.
+    setTimeout(() => revokeMediaBlobUrl(blobUrl), 120000);
     return downloadId;
   } catch (error) {
     forgetPendingEntry(pending.id);
+    revokeMediaBlobUrl(blobUrl);
     throw error;
   }
 }
@@ -438,13 +525,53 @@ chrome.tabs?.onRemoved?.addListener((tabId) => {
   tabTokens.delete(tabId);
 });
 
+// Required for googlevideo: server/path basename is "videoplayback", which overrides
+// downloads.download({filename}) unless we explicitly suggest our name here.
+// Event often fires BEFORE downloads.download resolves with downloadId.
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   forgetExpiredFilenames();
-  const match = findForcedFilename(downloadItem, [...pendingFilenames.values()]);
-  if (!match || !match.filename) return;
+
+  // Never interfere with downloads that were not started by this extension.
+  if (downloadItem.byExtensionId && downloadItem.byExtensionId !== chrome.runtime.id) {
+    return;
+  }
+  // If Chrome doesn't set byExtensionId, only claim when we have pending entries.
+  if (!pendingFilenames.size) return;
+
+  const ordered = [...pendingFilenames.values()];
+  const match = claimForcedFilename(downloadItem, ordered);
+  if (!match.filename || !match.entryId) {
+    pushFilenameDiagnostic({
+      jobId: null,
+      expectedFilename: null,
+      downloadId: Number.isInteger(downloadItem.id) ? downloadItem.id : null,
+      determiningFired: true,
+      matchFound: false,
+      strategy: 'none',
+      finalFilename: downloadItem.filename ? String(downloadItem.filename).split(/[/\\]/).pop() : null,
+    });
+    return;
+  }
+
+  const entry = pendingFilenames.get(match.entryId);
+  if (entry) {
+    entry.claimed = true;
+    entry.claimStrategy = match.strategy;
+    if (Number.isInteger(downloadItem.id)) entry.downloadId = downloadItem.id;
+    pendingFilenames.set(entry.id, entry);
+  }
+
   suggest({ filename: match.filename, conflictAction: 'uniquify' });
-  // Remove only the exact pending entry that matched this download.
-  if (match.entryId) forgetPendingEntry(match.entryId);
+  pushFilenameDiagnostic({
+    jobId: entry?.jobId || null,
+    expectedFilename: match.filename,
+    downloadId: Number.isInteger(downloadItem.id) ? downloadItem.id : null,
+    determiningFired: true,
+    matchFound: true,
+    strategy: match.strategy,
+    finalFilename: match.filename,
+  });
+  // Keep entry until download settles so downloadId binding still works; mark claimed.
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -470,6 +597,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         );
       case 'YTD_PING':
         return { ok: true, version: chrome.runtime.getManifest().version };
+      case 'YTD_FILENAME_DIAGNOSTICS':
+        return {
+          ok: true,
+          diagnostics: filenameDiagnostics.slice(-20),
+          pendingCount: pendingFilenames.size,
+        };
       default:
         return { ok: false, errorCode: 'UNKNOWN_MESSAGE' };
     }
@@ -485,7 +618,33 @@ chrome.downloads.onChanged.addListener((delta) => {
     const jobs = await readJobs();
     const job = jobs.find((item) => item.downloadId === delta.id);
     if (!job || job.state === 'cancelled') return;
-    const updated = applyDownloadDelta(job, delta, Date.now());
+    let updated = applyDownloadDelta(job, delta, Date.now());
+
+    // Capture the leaf filename Chrome actually assigned (never log media URLs).
+    if (delta.filename || delta.state) {
+      try {
+        const matches = await chromeCall(chrome.downloads.search, chrome.downloads, { id: delta.id });
+        const item = matches?.[0];
+        if (item?.filename) {
+          const leaf = String(item.filename).split(/[/\\]/).pop() || null;
+          if (leaf) {
+            updated = sanitizeJobForStorage({ ...updated, actualFilename: leaf });
+            pushFilenameDiagnostic({
+              jobId: job.id,
+              expectedFilename: job.suggestedFilename,
+              downloadId: delta.id,
+              determiningFired: true,
+              matchFound: true,
+              strategy: 'downloads-search',
+              finalFilename: leaf,
+            });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     if (updated.state === 'completed' || updated.state === 'failed') {
       forgetActiveSourceUrl(job.id);
       for (const [id, entry] of pendingFilenames.entries()) {

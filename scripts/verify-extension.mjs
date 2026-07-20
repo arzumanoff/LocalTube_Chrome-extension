@@ -32,6 +32,8 @@ const referenced = new Set([
   'src/core/metadata-wait.js',
   'src/core/messages.js',
   'src/core/jobs.js',
+  'src/offscreen.html',
+  'src/offscreen.js',
 ]);
 
 for (const relative of referenced) {

@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const {
   ensureMp4Filename,
   createPendingFilenameEntry,
-  findForcedFilename,
+  claimForcedFilename,
+  matchesExpectedFilename,
   isExtensionContextInvalidated,
 } = require('../src/core/download.js');
 
@@ -20,49 +21,56 @@ test('does not leave a bare name without .mp4', () => {
   assert.equal(ensureMp4Filename('Название ролика'), 'Название ролика.mp4');
 });
 
-test('matches forced filename by downloadId first so parallel jobs do not swap names', () => {
+test('claims by downloadId when available so parallel jobs keep distinct names', () => {
   const pending = [
     createPendingFilenameEntry({
       id: 'p1',
       jobId: 'job-a',
-      url: 'https://r1.googlevideo.com/videoplayback?itag=18&id=a',
       filename: 'Alpha.mp4',
       downloadId: 11,
     }),
     createPendingFilenameEntry({
       id: 'p2',
       jobId: 'job-b',
-      url: 'https://r2.googlevideo.com/videoplayback?itag=18&id=b',
       filename: 'Beta.mp4',
       downloadId: 22,
     }),
   ];
 
   assert.deepEqual(
-    findForcedFilename({ id: 22, url: 'https://r2.googlevideo.com/videoplayback?itag=18&id=b' }, pending),
-    { filename: 'Beta.mp4', entryId: 'p2' },
+    claimForcedFilename({ id: 22 }, pending),
+    { filename: 'Beta.mp4', entryId: 'p2', strategy: 'downloadId' },
   );
   assert.deepEqual(
-    findForcedFilename({ id: 11, url: 'https://r1.googlevideo.com/videoplayback?itag=18&id=a' }, pending),
-    { filename: 'Alpha.mp4', entryId: 'p1' },
+    claimForcedFilename({ id: 11 }, pending),
+    { filename: 'Alpha.mp4', entryId: 'p1', strategy: 'downloadId' },
   );
 });
 
-test('falls back to exact media URL when downloadId is not bound yet', () => {
+test('onDeterminingFilename before downloadId uses FIFO queue order', () => {
   const pending = [
-    createPendingFilenameEntry({
-      id: 'p3',
-      jobId: 'job-c',
-      url: 'https://r3.googlevideo.com/videoplayback?itag=18&id=c',
-      filename: 'Gamma.mp4',
-    }),
+    createPendingFilenameEntry({ id: 'p1', jobId: 'job-a', filename: 'Alpha.mp4' }),
+    createPendingFilenameEntry({ id: 'p2', jobId: 'job-b', filename: 'Beta.mp4' }),
   ];
-  const match = findForcedFilename({
-    url: 'https://r3.googlevideo.com/videoplayback?itag=18&id=c',
-    finalUrl: '',
-  }, pending);
-  assert.equal(match.filename, 'Gamma.mp4');
-  assert.equal(match.entryId, 'p3');
+  // Event fires with an id that is not bound yet — claim oldest unclaimed entry.
+  const first = claimForcedFilename({ id: 99, url: 'https://r.googlevideo.com/videoplayback' }, pending);
+  assert.equal(first.strategy, 'queue');
+  assert.equal(first.filename, 'Alpha.mp4');
+  assert.equal(first.entryId, 'p1');
+
+  // Mark first claimed and ensure second is next.
+  pending[0].claimed = true;
+  const second = claimForcedFilename({ id: 100 }, pending);
+  assert.equal(second.filename, 'Beta.mp4');
+  assert.equal(second.entryId, 'p2');
+});
+
+test('matchesExpectedFilename accepts uniquify suffixes and rejects videoplayback', () => {
+  assert.equal(matchesExpectedFilename('Me at the zoo.mp4', 'Me at the zoo.mp4'), true);
+  assert.equal(matchesExpectedFilename('Me at the zoo (1).mp4', 'Me at the zoo.mp4'), true);
+  assert.equal(matchesExpectedFilename('videoplayback.mp4', 'Me at the zoo.mp4'), false);
+  assert.equal(matchesExpectedFilename('videoplayback (1).mp4', 'Me at the zoo.mp4'), false);
+  assert.equal(matchesExpectedFilename('Мой тестовый ролик.mp4', 'Мой тестовый ролик.mp4'), true);
 });
 
 test('detects extension context invalidated errors', () => {
