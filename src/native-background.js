@@ -10,6 +10,7 @@ const {
 
 const REQUEST_TIMEOUTS = {
   ping: 5000,
+  status: 5000,
   probe: 45000,
   download: 900000,
   cancel: 10000,
@@ -139,6 +140,9 @@ async function handleMessage(message) {
   switch (message?.type) {
     case 'YTD_NATIVE_PING':
       return sendNativeRequest('ping');
+
+    case 'YTD_NATIVE_STATUS':
+      return sendNativeRequest('status');
 
     case 'YTD_NATIVE_PROBE': {
       const validation = buildProbePayload(String(message.payload?.url || ''));
