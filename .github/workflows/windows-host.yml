@@ -14,6 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -76,7 +80,6 @@ jobs:
           Remove-Item $ReleaseDir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path (Join-Path $EngineDir 'dist') -Force | Out-Null
           New-Item -ItemType Directory -Path (Join-Path $EngineDir 'tools') -Force | Out-Null
-          New-Item -ItemType Directory -Path (Join-Path $ExtensionDir 'src\core') -Force | Out-Null
 
           Copy-Item 'native-host\dist\media-engine-host.exe' (Join-Path $EngineDir 'dist\media-engine-host.exe') -Force
           Copy-Item 'native-host\tools\ffmpeg.exe' (Join-Path $EngineDir 'tools\ffmpeg.exe') -Force
@@ -88,10 +91,7 @@ jobs:
           Copy-Item 'native-host\UNINSTALL_ENGINE.cmd' $EngineDir -Force
           Copy-Item 'native-host\TEST_PACKAGE_README.txt' (Join-Path $PackageRoot 'README.txt') -Force
 
-          Copy-Item 'manifest.json' $ExtensionDir -Force
-          Copy-Item 'src\native-background.js' (Join-Path $ExtensionDir 'src\native-background.js') -Force
-          Copy-Item 'src\native-content.js' (Join-Path $ExtensionDir 'src\native-content.js') -Force
-          Copy-Item 'src\core\native.js' (Join-Path $ExtensionDir 'src\core\native.js') -Force
+          node scripts/package-extension.mjs $ExtensionDir
 
           @(
             "Package commit: $env:GITHUB_SHA"
