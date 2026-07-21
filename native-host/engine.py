@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -86,16 +87,37 @@ def build_qualities(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     qualities: list[dict[str, Any]] = []
     for (height, fps), group in grouped.items():
+        has_ready_progressive = any(
+            str(item.get("ext") or "").lower() == "mp4"
+            and _codec_starts(item.get("vcodec"), ("avc1", "h264"))
+            and _codec_starts(item.get("acodec"), ("mp4a", "aac"))
+            for item in group
+        )
         has_progressive = any(str(item.get("acodec") or "none") != "none" for item in group)
-        has_h264 = any(_codec_starts(item.get("vcodec"), ("avc1", "h264")) for item in group)
+        has_h264_video = any(_codec_starts(item.get("vcodec"), ("avc1", "h264")) for item in group)
+        can_merge_without_transcode = has_h264_video and has_aac_audio
+
+        if has_ready_progressive:
+            requires_merge = False
+            requires_transcode = False
+        elif can_merge_without_transcode:
+            requires_merge = True
+            requires_transcode = False
+        elif has_progressive:
+            requires_merge = False
+            requires_transcode = True
+        else:
+            requires_merge = True
+            requires_transcode = True
+
         label = f"{height}p{fps}" if fps > 30 else f"{height}p"
         qualities.append({
             "id": f"h{height}-f{fps}",
             "height": height,
             "fps": fps,
             "label": label,
-            "requiresMerge": not has_progressive,
-            "requiresTranscode": not (has_h264 and has_aac_audio),
+            "requiresMerge": requires_merge,
+            "requiresTranscode": requires_transcode,
         })
 
     qualities.sort(key=lambda item: (-item["height"], -item["fps"], item["id"]))
@@ -118,10 +140,12 @@ def build_format_selector(quality_id: str) -> str:
     fps_filter = "[fps<=30]" if fps <= 30 else f"[fps>={max(31, fps - 1)}][fps<={fps}]"
     base = f"[height={height}]{fps_filter}"
     return "/".join([
+        f"best{base}[ext=mp4][vcodec^=avc1][acodec^=mp4a]",
+        f"best{base}[ext=mp4][vcodec^=h264][acodec^=aac]",
         f"bestvideo{base}[vcodec^=avc1]+bestaudio[acodec^=mp4a]",
-        f"bestvideo{base}[vcodec^=h264]+bestaudio[acodec^=mp4a]",
-        f"bestvideo{base}+bestaudio",
+        f"bestvideo{base}[vcodec^=h264]+bestaudio[acodec^=aac]",
         f"best{base}",
+        f"bestvideo{base}+bestaudio",
     ])
 
 
@@ -238,6 +262,15 @@ def _select_downloaded_file(directory: Path) -> Path:
     return max(candidates, key=lambda path: path.stat().st_size)
 
 
+def source_processing_mode(source: Path, source_info: dict[str, Any]) -> str:
+    h264_aac = source_info.get("videoCodec") == "h264" and source_info.get("audioCodec") == "aac"
+    if h264_aac and source.suffix.lower() == ".mp4":
+        return "ready"
+    if h264_aac:
+        return "remux"
+    return "transcode"
+
+
 def _run_ffmpeg(
     source: Path,
     target: Path,
@@ -252,6 +285,7 @@ def _run_ffmpeg(
     command = [
         ffmpeg,
         "-y",
+        "-loglevel", "error",
         "-i", str(source),
         "-map", "0:v:0",
         "-map", "0:a:0",
@@ -268,20 +302,24 @@ def _run_ffmpeg(
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     process_holder["process"] = process
+    output_tail: deque[str] = deque(maxlen=80)
     try:
         assert process.stdout is not None
         for line in process.stdout:
             if cancel_event.is_set():
                 process.terminate()
                 raise EngineError("DOWNLOAD_CANCELLED", "Скачивание отменено.")
-            key, _, value = line.strip().partition("=")
+            stripped = line.strip()
+            if stripped:
+                output_tail.append(stripped)
+            key, _, value = stripped.partition("=")
             if key == "out_time_ms" and duration > 0:
                 try:
                     seconds = int(value) / 1_000_000
@@ -289,10 +327,10 @@ def _run_ffmpeg(
                     emit({"event": "progress", "jobId": job_id, "stage": stage, "percent": percent})
                 except ValueError:
                     pass
-        stderr = process.stderr.read() if process.stderr else ""
         return_code = process.wait()
         if return_code != 0:
-            raise EngineError("FFMPEG_FAILED", stderr.strip()[-1500:] or "FFmpeg завершился с ошибкой.")
+            details = "\n".join(output_tail)[-1500:]
+            raise EngineError("FFMPEG_FAILED", details or "FFmpeg завершился с ошибкой.")
     finally:
         process_holder.pop("process", None)
 
@@ -339,7 +377,8 @@ def run_download(
         })
 
     def postprocessor_hook(data: dict[str, Any]) -> None:
-        if str(data.get("status") or "") in {"started", "processing"}:
+        processor = str(data.get("postprocessor") or "").lower()
+        if "merger" in processor and str(data.get("status") or "") in {"started", "processing"}:
             emit({"event": "progress", "jobId": job_id, "stage": "merging", "percent": 0})
 
     options = {
@@ -366,17 +405,23 @@ def run_download(
         source_info = inspect_media(source)
         if source_info["height"] != height:
             raise EngineError("RESOLUTION_MISMATCH", f"Получено {source_info['height']}p вместо выбранного {height}p.")
-        copy_streams = source_info["videoCodec"] == "h264" and source_info["audioCodec"] == "aac"
-        _run_ffmpeg(
-            source,
-            partial_final,
-            float(source_info["duration"] or (info or {}).get("duration") or 0),
-            copy_streams,
-            job_id,
-            cancel_event,
-            process_holder,
-            emit,
-        )
+
+        mode = source_processing_mode(source, source_info)
+        if mode == "ready":
+            emit({"event": "progress", "jobId": job_id, "stage": "finalizing", "percent": 100})
+            shutil.copy2(source, partial_final)
+        else:
+            _run_ffmpeg(
+                source,
+                partial_final,
+                float(source_info["duration"] or (info or {}).get("duration") or 0),
+                mode == "remux",
+                job_id,
+                cancel_event,
+                process_holder,
+                emit,
+            )
+
         result_info = inspect_media(partial_final)
         if result_info["videoCodec"] != "h264" or result_info["audioCodec"] != "aac":
             raise EngineError("OUTPUT_CODEC_MISMATCH", "Итоговый файл должен содержать H.264 и AAC.")
