@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from engine import _run_ffmpeg, inspect_media  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) != 5:
+        raise SystemExit(
+            "usage: smoke_media_pipeline.py <source.mkv> <target.mp4> <ffmpeg> <ffprobe>"
+        )
+
+    source = Path(sys.argv[1]).resolve()
+    target = Path(sys.argv[2]).resolve()
+    os.environ["MEDIA_ENGINE_FFMPEG"] = str(Path(sys.argv[3]).resolve())
+    os.environ["MEDIA_ENGINE_FFPROBE"] = str(Path(sys.argv[4]).resolve())
+
+    source_info = inspect_media(source)
+    events: list[dict[str, object]] = []
+    _run_ffmpeg(
+        source=source,
+        target=target,
+        duration=source_info["duration"],
+        copy_streams=True,
+        job_id="smoke-remux",
+        cancel_event=threading.Event(),
+        process_holder={},
+        emit=events.append,
+    )
+
+    result = inspect_media(target)
+    if result["videoCodec"] != "h264" or result["audioCodec"] != "aac":
+        raise AssertionError(f"unexpected codecs: {result}")
+    if result["height"] != 360:
+        raise AssertionError(f"unexpected height: {result}")
+    if not events or events[0].get("stage") != "merging":
+        raise AssertionError(f"missing merging progress: {events}")
+
+    print("media pipeline smoke passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
