@@ -1,16 +1,42 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import sys
 import threading
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, TextIO
 
 MAX_MESSAGE_BYTES = 1024 * 1024
 
 
 class ProtocolError(RuntimeError):
     pass
+
+
+def reserve_native_stdout(
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> BinaryIO:
+    """Reserve the original stdout pipe exclusively for Native Messaging.
+
+    The returned binary stream keeps a duplicate of Chrome's stdout pipe.
+    File descriptor 1 is then redirected to stderr, so accidental ``print``
+    calls and inherited child-process output cannot corrupt framed JSON.
+    """
+    output = stdout or sys.stdout
+    errors = stderr or sys.stderr
+    output.flush()
+    errors.flush()
+
+    protocol_fd = os.dup(output.fileno())
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.setmode(protocol_fd, os.O_BINARY)
+    protocol_stream = os.fdopen(protocol_fd, "wb", buffering=0)
+    os.dup2(errors.fileno(), output.fileno())
+    return protocol_stream
 
 
 def read_message(stream: BinaryIO | None = None) -> dict[str, Any] | None:
