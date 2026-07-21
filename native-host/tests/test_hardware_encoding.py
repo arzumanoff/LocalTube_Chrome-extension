@@ -87,12 +87,13 @@ class HardwareEncodingTests(unittest.TestCase):
         discover.assert_called_once()
         smoke.assert_called_once()
 
-    def test_smoke_uses_exact_profile_arguments(self) -> None:
+    def test_smoke_uses_supported_hd_frame_and_exact_profile_arguments(self) -> None:
         completed = Mock(returncode=0, stderr="")
         profile = hardware_encoding.profile_by_key("amd-amf")
         with patch("hardware_encoding.subprocess.run", return_value=completed) as runner:
             self.assertTrue(hardware_encoding.smoke_test_profile("ffmpeg.exe", profile))
         command = runner.call_args.args[0]
+        self.assertIn("color=c=black:s=1280x720:r=30", command)
         self.assertIn("h264_amf", command)
         self.assertIn("-frames:v", command)
         self.assertEqual(command[-2:], ["null", "-"])
