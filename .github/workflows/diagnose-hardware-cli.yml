@@ -13,6 +13,7 @@ jobs:
     runs-on: windows-latest
     env:
       MEDIA_ENGINE_VIDEO_ENCODER: 'software'
+      MEDIA_ENGINE_STDOUT_DIAGNOSTIC: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -40,33 +41,61 @@ jobs:
           Expand-Archive -Path $Zip -DestinationPath $Extract -Force
           $Ffmpeg = Get-ChildItem $Extract -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1
           if (-not $Ffmpeg) { throw 'ffmpeg.exe not found.' }
-          Copy-Item $Ffmpeg.FullName 'native-host\dist\ffmpeg.exe' -Force
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine'
+          New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+          Copy-Item 'native-host\dist\media-engine-host.exe' (Join-Path $InstallDir 'media-engine-host.exe') -Force
+          Copy-Item $Ffmpeg.FullName (Join-Path $InstallDir 'ffmpeg.exe') -Force
 
-      - name: Run detection and capture complete output
+      - name: Reproduce installer detection and JSON parsing
         id: detect
         continue-on-error: true
         shell: powershell
         run: |
-          $Diagnostic = Join-Path $env:RUNNER_TEMP 'hardware-cli-diagnostic.txt'
-          $Profile = Join-Path $env:RUNNER_TEMP 'hardware-profile.json'
-          $env:MEDIA_ENGINE_HARDWARE_PROFILE = $Profile
-          $Output = (& 'native-host\dist\media-engine-host.exe' --detect-hardware 2>&1 | Out-String)
-          $Code = $LASTEXITCODE
-          @(
-            "exitCode=$Code"
-            "profileExists=$(Test-Path $Profile)"
-            'stdoutAndStderr:'
-            $Output
-          ) | Set-Content -Path $Diagnostic -Encoding utf8
-          Get-Content $Diagnostic
-          if ($Code -ne 0) { exit $Code }
+          $ErrorActionPreference = 'Stop'
+          $Diagnostic = Join-Path $PWD 'hardware-cli-diagnostic.txt'
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine'
+          $HostExe = Join-Path $InstallDir 'media-engine-host.exe'
+          $ProfilePath = Join-Path $InstallDir 'hardware-profile.json'
+          try {
+            $Output = (& $HostExe --detect-hardware 2>&1 | Out-String).Trim()
+            $Code = $LASTEXITCODE
+            $Parsed = $null
+            $ParseError = ''
+            try {
+              $Parsed = $Output | ConvertFrom-Json
+            } catch {
+              $ParseError = ($_ | Out-String)
+            }
+            @(
+              "exitCode=$Code"
+              "profileExists=$(Test-Path $ProfilePath)"
+              "parsed=$($null -ne $Parsed)"
+              "encoderKey=$($Parsed.encoderKey)"
+              "status=$($Parsed.status)"
+              'parseError:'
+              $ParseError
+              'stdoutAndStderr:'
+              $Output
+            ) | Set-Content -Path $Diagnostic -Encoding utf8
+            Get-Content $Diagnostic
+            if ($Code -ne 0) { throw "Detection exited with $Code" }
+            if ($null -eq $Parsed) { throw 'Detection output is not valid JSON.' }
+            if (-not (Test-Path $ProfilePath)) { throw 'Profile file was not created.' }
+          } catch {
+            if (-not (Test-Path $Diagnostic)) {
+              ($_ | Out-String) | Set-Content -Path $Diagnostic -Encoding utf8
+            } else {
+              Add-Content -Path $Diagnostic -Value @('', 'stepException:', ($_ | Out-String))
+            }
+            throw
+          }
 
       - name: Upload hardware CLI diagnostic
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hardware-cli-diagnostic
-          path: ${{ runner.temp }}/hardware-cli-diagnostic.txt
+          path: hardware-cli-diagnostic.txt
           if-no-files-found: error
           retention-days: 2
 
