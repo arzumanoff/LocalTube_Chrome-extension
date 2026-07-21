@@ -36,6 +36,9 @@ def reserve_native_stdout(
         msvcrt.setmode(protocol_fd, os.O_BINARY)
     protocol_stream = os.fdopen(protocol_fd, "wb", buffering=0)
     os.dup2(errors.fileno(), output.fileno())
+
+    if os.environ.get("MEDIA_ENGINE_STDOUT_DIAGNOSTIC") == "1":
+        print("native host diagnostic stdout noise", flush=True)
     return protocol_stream
 
 
