@@ -57,12 +57,24 @@ jobs:
           $HostExe = Join-Path $InstallDir 'media-engine-host.exe'
           $ProfilePath = Join-Path $InstallDir 'hardware-profile.json'
           try {
-            $Output = (& $HostExe --detect-hardware 2>&1 | Out-String).Trim()
-            $Code = $LASTEXITCODE
+            $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $StartInfo.FileName = $HostExe
+            $StartInfo.Arguments = '--detect-hardware'
+            $StartInfo.UseShellExecute = $false
+            $StartInfo.CreateNoWindow = $true
+            $StartInfo.RedirectStandardOutput = $true
+            $StartInfo.RedirectStandardError = $true
+            $Process = New-Object System.Diagnostics.Process
+            $Process.StartInfo = $StartInfo
+            if (-not $Process.Start()) { throw 'Failed to start hardware CLI.' }
+            $Stdout = $Process.StandardOutput.ReadToEnd()
+            $Stderr = $Process.StandardError.ReadToEnd()
+            $Process.WaitForExit()
+            $Code = $Process.ExitCode
             $Parsed = $null
             $ParseError = ''
             try {
-              $Parsed = $Output | ConvertFrom-Json
+              $Parsed = $Stdout.Trim() | ConvertFrom-Json
             } catch {
               $ParseError = ($_ | Out-String)
             }
@@ -74,8 +86,10 @@ jobs:
               "status=$($Parsed.status)"
               'parseError:'
               $ParseError
-              'stdoutAndStderr:'
-              $Output
+              'stdout:'
+              $Stdout
+              'stderr:'
+              $Stderr
             ) | Set-Content -Path $Diagnostic -Encoding utf8
             Get-Content $Diagnostic
             if ($Code -ne 0) { throw "Detection exited with $Code" }
