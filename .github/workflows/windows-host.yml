@@ -180,20 +180,26 @@ jobs:
           $InstalledHost = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\media-engine-host.exe'
           python native-host/tests/smoke_reinstall_running_host.py $EngineDir $InstalledHost
 
-      - name: Verify persisted hardware profile
+      - name: Verify persisted hardware profile and diagnostics
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $InstallDir = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine'
           $ProfilePath = Join-Path $InstallDir 'hardware-profile.json'
+          $LogPath = Join-Path $InstallDir 'logs\hardware-detection.log'
           $FfmpegPath = Join-Path $InstallDir 'ffmpeg.exe'
           if (-not (Test-Path $ProfilePath)) { throw 'hardware-profile.json was not created.' }
+          if (-not (Test-Path $LogPath)) { throw 'hardware-detection.log was not created.' }
           $Profile = Get-Content $ProfilePath -Raw | ConvertFrom-Json
           if ($Profile.schemaVersion -ne 1) { throw 'Unexpected hardware profile schema.' }
           if ($Profile.encoderKey -ne 'software-x264') { throw "Unexpected CI encoder: $($Profile.encoderKey)" }
           if ($Profile.status -ne 'verified') { throw 'Hardware profile is not verified.' }
           $Hash = (Get-FileHash $FfmpegPath -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($Profile.ffmpegFingerprint -ne "sha256:$Hash") { throw 'FFmpeg fingerprint mismatch.' }
+          $LogText = Get-Content $LogPath -Raw
+          foreach ($Token in @('ffmpegFingerprint=sha256:', 'advertisedEncoders=', 'selected: software-x264', 'result=success')) {
+            if ($LogText -notlike "*$Token*") { throw "Hardware log is missing: $Token" }
+          }
 
       - name: Smoke installed Native Host
         shell: powershell
@@ -217,12 +223,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine'
           $RegistryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.arzumanoff.media_engine'
           if (-not (Test-Path $RegistryPath)) { throw 'Native Messaging registry key was not created.' }
           foreach ($Name in @('media-engine-host.exe', 'ffmpeg.exe', 'ffprobe.exe', 'deno.exe', 'native-host.json', 'hardware-profile.json')) {
-            $Installed = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine\$Name"
+            $Installed = Join-Path $InstallDir $Name
             if (-not (Test-Path $Installed)) { throw "Installed component missing: $Installed" }
           }
+          $HardwareLog = Join-Path $InstallDir 'logs\hardware-detection.log'
+          if (-not (Test-Path $HardwareLog)) { throw "Installed component missing: $HardwareLog" }
 
       - name: Uninstall staged package
         if: always()
