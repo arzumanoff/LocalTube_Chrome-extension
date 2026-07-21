@@ -14,7 +14,7 @@ from typing import Any
 from engine import EngineError, is_supported_url, probe_video, run_download
 from protocol import MessageWriter, ProtocolError, read_message, reserve_native_stdout
 
-HOST_VERSION = "0.1.1"
+HOST_VERSION = "0.1.2"
 INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 URL_IN_LOG = re.compile(r"https?://\S+", re.IGNORECASE)
 RESERVED_WINDOWS_NAMES = {
@@ -22,6 +22,7 @@ RESERVED_WINDOWS_NAMES = {
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
 }
+TERMINAL_STAGES = {"completed", "cancelled", "failed"}
 
 
 @dataclass
@@ -30,6 +31,8 @@ class JobState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     process_holder: dict[str, Any] = field(default_factory=dict)
     thread: threading.Thread | None = None
+    stage: str = "preparing"
+    percent: float = 0.0
 
 
 writer = MessageWriter(reserve_native_stdout())
@@ -65,6 +68,18 @@ def response(request_id: str, **payload: Any) -> None:
 
 def emit(payload: dict[str, Any]) -> None:
     writer.write(payload)
+
+
+def emit_job(job: JobState, payload: dict[str, Any]) -> None:
+    stage = str(payload.get("stage") or "")
+    if stage:
+        job.stage = stage
+    try:
+        if payload.get("percent") is not None:
+            job.percent = max(0.0, min(100.0, float(payload["percent"])))
+    except (TypeError, ValueError):
+        pass
+    emit(payload)
 
 
 def sanitize_suggested_filename(value: Any) -> str:
@@ -107,6 +122,11 @@ def finish_job(job_id: str) -> None:
         jobs.pop(job_id, None)
 
 
+def current_job() -> JobState | None:
+    with jobs_lock:
+        return next(iter(jobs.values()), None)
+
+
 def download_worker(job: JobState, url: str, quality_id: str, output_path: str) -> None:
     log(f"job {job.job_id} worker started quality={quality_id}")
     try:
@@ -117,9 +137,9 @@ def download_worker(job: JobState, url: str, quality_id: str, output_path: str) 
             job_id=job.job_id,
             cancel_event=job.cancel_event,
             process_holder=job.process_holder,
-            emit=emit,
+            emit=lambda payload: emit_job(job, payload),
         )
-        emit({
+        emit_job(job, {
             "event": "progress",
             "jobId": job.job_id,
             "stage": "completed",
@@ -135,7 +155,7 @@ def download_worker(job: JobState, url: str, quality_id: str, output_path: str) 
     except EngineError as exc:
         stage = "cancelled" if exc.code == "DOWNLOAD_CANCELLED" else "failed"
         log(f"job {job.job_id} engine error code={exc.code}: {exc}")
-        emit({
+        emit_job(job, {
             "event": "progress",
             "jobId": job.job_id,
             "stage": stage,
@@ -144,7 +164,7 @@ def download_worker(job: JobState, url: str, quality_id: str, output_path: str) 
         })
     except Exception as exc:
         log(traceback.format_exc())
-        emit({
+        emit_job(job, {
             "event": "progress",
             "jobId": job.job_id,
             "stage": "failed",
@@ -153,10 +173,26 @@ def download_worker(job: JobState, url: str, quality_id: str, output_path: str) 
         })
     finally:
         finish_job(job.job_id)
+        log(f"job {job.job_id} released")
 
 
 def handle_ping(request_id: str) -> None:
     response(request_id, ok=True, version=HOST_VERSION)
+
+
+def handle_status(request_id: str) -> None:
+    job = current_job()
+    if not job:
+        response(request_id, ok=True, busy=False)
+        return
+    response(
+        request_id,
+        ok=True,
+        busy=True,
+        jobId=job.job_id,
+        stage=job.stage,
+        percent=job.percent,
+    )
 
 
 def handle_probe(request_id: str, message: dict[str, Any]) -> None:
@@ -185,10 +221,18 @@ def handle_download(request_id: str, message: dict[str, Any]) -> None:
         response(request_id, ok=False, errorCode="INVALID_VIDEO_URL", message="Некорректная ссылка YouTube.")
         return
 
-    with jobs_lock:
-        if jobs:
-            response(request_id, ok=False, errorCode="BUSY", message="Сейчас уже выполняется другое скачивание.")
-            return
+    existing = current_job()
+    if existing:
+        response(
+            request_id,
+            ok=False,
+            errorCode="BUSY",
+            message="Сейчас уже выполняется другое скачивание.",
+            jobId=existing.job_id,
+            stage=existing.stage,
+            percent=existing.percent,
+        )
+        return
 
     try:
         log(f"download requested quality={quality_id}; opening save dialog")
@@ -243,6 +287,7 @@ def handle_cancel(request_id: str, message: dict[str, Any]) -> None:
             process.terminate()
         except OSError:
             pass
+    job.stage = "cancelled"
     log(f"job {job_id} cancel requested")
     response(request_id, ok=True, jobId=job_id, stage="cancelled")
 
@@ -254,6 +299,8 @@ def handle_message(message: dict[str, Any]) -> None:
         return
     if action == "ping":
         handle_ping(request_id)
+    elif action == "status":
+        handle_status(request_id)
     elif action == "probe":
         handle_probe(request_id, message)
     elif action == "download":
