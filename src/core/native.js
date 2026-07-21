@@ -7,6 +7,8 @@
   const MAX_URL_LENGTH = 4096;
   const MAX_FILENAME_LENGTH = 260;
   const MAX_QUALITIES = 100;
+  const RETRYABLE_NATIVE_ACTIONS = new Set(['ping', 'status', 'probe']);
+  const RETRYABLE_NATIVE_ERROR_CODES = new Set(['NATIVE_HOST_DISCONNECTED', 'NATIVE_SEND_FAILED']);
 
   function isPlainObject(value) {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -125,6 +127,12 @@
     return { ok: true, payload: { jobId } };
   }
 
+  function shouldRetryNativeRequest(action, response, attempt = 0) {
+    if (attempt !== 0) return false;
+    if (!RETRYABLE_NATIVE_ACTIONS.has(String(action || ''))) return false;
+    return RETRYABLE_NATIVE_ERROR_CODES.has(String(response?.errorCode || ''));
+  }
+
   return {
     NATIVE_HOST_NAME,
     isSupportedYouTubeUrl,
@@ -134,5 +142,6 @@
     buildProbePayload,
     buildDownloadPayload,
     buildCancelPayload,
+    shouldRetryNativeRequest,
   };
 });
