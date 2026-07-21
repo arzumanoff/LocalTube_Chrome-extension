@@ -6,6 +6,7 @@ import struct
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -18,6 +19,7 @@ from engine import (  # noqa: E402
     parse_quality_id,
     source_processing_mode,
 )
+import host  # noqa: E402
 from host import sanitize_suggested_filename  # noqa: E402
 from protocol import MessageWriter, ProtocolError, read_message  # noqa: E402
 
@@ -88,6 +90,33 @@ class EngineTests(unittest.TestCase):
             source_processing_mode(Path("source.webm"), {"videoCodec": "vp9", "audioCodec": "opus"}),
             "transcode",
         )
+
+    def test_busy_response_exposes_active_job_for_cancellation(self) -> None:
+        job = host.JobState(job_id="job-existing", stage="merging", percent=42)
+        with host.jobs_lock:
+            host.jobs[job.job_id] = job
+        try:
+            with patch.object(host, "response") as mocked_response:
+                host.handle_download(
+                    "request-1",
+                    {
+                        "url": "https://www.youtube.com/watch?v=abc",
+                        "qualityId": "h1080-f30",
+                        "suggestedFilename": "Demo.mp4",
+                    },
+                )
+            mocked_response.assert_called_once_with(
+                "request-1",
+                ok=False,
+                errorCode="BUSY",
+                message="Сейчас уже выполняется другое скачивание.",
+                jobId="job-existing",
+                stage="merging",
+                percent=42,
+            )
+        finally:
+            with host.jobs_lock:
+                host.jobs.clear()
 
     def test_parse_quality_rejects_invalid_value(self) -> None:
         self.assertEqual(parse_quality_id("h720-f30"), (720, 30))
