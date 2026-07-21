@@ -8,6 +8,7 @@ const {
   buildProbePayload,
   buildDownloadPayload,
   buildCancelPayload,
+  shouldRetryNativeRequest,
 } = require('../src/core/native.js');
 
 test('uses stable neutral native host name', () => {
@@ -88,4 +89,15 @@ test('builds strict probe, download and cancel payloads', () => {
   assert.equal(buildDownloadPayload({ url: 'https://www.youtube.com/watch?v=abc', qualityId: '', suggestedFilename: 'x.mp4' }).ok, false);
   assert.equal(buildCancelPayload('job-123').ok, true);
   assert.equal(buildCancelPayload('../bad').ok, false);
+});
+
+test('retries a dead native port once only for idempotent requests', () => {
+  for (const action of ['ping', 'status', 'probe']) {
+    assert.equal(shouldRetryNativeRequest(action, { errorCode: 'NATIVE_HOST_DISCONNECTED' }, 0), true);
+    assert.equal(shouldRetryNativeRequest(action, { errorCode: 'NATIVE_SEND_FAILED' }, 0), true);
+    assert.equal(shouldRetryNativeRequest(action, { errorCode: 'NATIVE_HOST_DISCONNECTED' }, 1), false);
+  }
+  assert.equal(shouldRetryNativeRequest('download', { errorCode: 'NATIVE_HOST_DISCONNECTED' }, 0), false);
+  assert.equal(shouldRetryNativeRequest('cancel', { errorCode: 'NATIVE_SEND_FAILED' }, 0), false);
+  assert.equal(shouldRetryNativeRequest('probe', { errorCode: 'FFMPEG_FAILED' }, 0), false);
 });
