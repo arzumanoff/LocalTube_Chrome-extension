@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -13,6 +14,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import bootstrap  # noqa: E402
+
+
+def hardware_payload() -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "encoderKey": "software-x264",
+        "ffmpegEncoder": "libx264",
+        "displayName": "Процессор (libx264)",
+        "hardware": False,
+        "status": "verified",
+        "testedAt": "2026-07-21T12:00:00Z",
+        "ffmpegFingerprint": "sha256:" + "0" * 64,
+    }
 
 
 class BootstrapTests(unittest.TestCase):
@@ -33,18 +47,8 @@ class BootstrapTests(unittest.TestCase):
             directory = Path(directory_text)
             ffmpeg = directory / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
             ffmpeg.write_bytes(b"fake")
-            payload = {
-                "schemaVersion": 1,
-                "encoderKey": "software-x264",
-                "ffmpegEncoder": "libx264",
-                "displayName": "Процессор (libx264)",
-                "hardware": False,
-                "status": "verified",
-                "testedAt": "2026-07-21T12:00:00Z",
-                "ffmpegFingerprint": "sha256:" + "0" * 64,
-            }
             output = io.StringIO()
-            with patch("hardware_profile.detect_and_store", return_value=payload) as detect, patch.object(
+            with patch("hardware_profile.detect_and_store", return_value=hardware_payload()) as detect, patch.object(
                 bootstrap, "configure_native_stdio"
             ) as native_stdio, redirect_stdout(output):
                 result = bootstrap.run_maintenance_command(["--detect-hardware"], directory)
@@ -53,6 +57,21 @@ class BootstrapTests(unittest.TestCase):
             native_stdio.assert_not_called()
             detect.assert_called_once()
             self.assertIn('"encoderKey":"software-x264"', output.getvalue())
+
+    def test_detect_hardware_json_is_safe_for_windows_cp1252_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_text:
+            directory = Path(directory_text)
+            raw = io.BytesIO()
+            output = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+            with patch("hardware_profile.detect_and_store", return_value=hardware_payload()), redirect_stdout(output):
+                result = bootstrap.run_maintenance_command(["--detect-hardware"], directory)
+                output.flush()
+
+            self.assertEqual(result, 0)
+            decoded = raw.getvalue().decode("cp1252").strip()
+            parsed = json.loads(decoded)
+            self.assertEqual(parsed["displayName"], "Процессор (libx264)")
+            self.assertIn("\\u041f", decoded)
 
     def test_unknown_command_returns_nonzero_without_native_host(self) -> None:
         with patch.object(bootstrap, "configure_native_stdio") as native_stdio:
