@@ -17,6 +17,13 @@ class EncoderProfile:
     args: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class SmokeTestResult:
+    ok: bool
+    return_code: int | None
+    details: str
+
+
 _PROFILES: tuple[EncoderProfile, ...] = (
     EncoderProfile(
         key="nvidia-nvenc",
@@ -114,8 +121,8 @@ def discover_encoder_names(ffmpeg: str) -> set[str]:
     return parse_encoder_names(completed.stdout)
 
 
-def smoke_test_profile(ffmpeg: str, profile: EncoderProfile) -> bool:
-    command = [
+def _smoke_command(ffmpeg: str, profile: EncoderProfile) -> list[str]:
+    return [
         ffmpeg,
         "-hide_banner",
         "-loglevel", "error",
@@ -128,6 +135,18 @@ def smoke_test_profile(ffmpeg: str, profile: EncoderProfile) -> bool:
         "-f", "null",
         "-",
     ]
+
+
+def _error_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace").strip()
+    return str(value).strip()
+
+
+def smoke_test_profile_detailed(ffmpeg: str, profile: EncoderProfile) -> SmokeTestResult:
+    command = _smoke_command(ffmpeg, profile)
     try:
         completed = subprocess.run(
             command,
@@ -140,9 +159,27 @@ def smoke_test_profile(ffmpeg: str, profile: EncoderProfile) -> bool:
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return completed.returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        details = _error_text(exc.stderr or exc.stdout)
+        message = "Probe timed out after 15 seconds."
+        if details:
+            message += f" {details}"
+        return SmokeTestResult(ok=False, return_code=None, details=message)
+    except OSError as exc:
+        return SmokeTestResult(ok=False, return_code=None, details=f"OS error: {exc}")
+
+    details = _error_text(completed.stderr)
+    if completed.returncode == 0:
+        return SmokeTestResult(ok=True, return_code=0, details=details or "FFmpeg probe completed successfully.")
+    return SmokeTestResult(
+        ok=False,
+        return_code=completed.returncode,
+        details=details or "FFmpeg returned no diagnostic text.",
+    )
+
+
+def smoke_test_profile(ffmpeg: str, profile: EncoderProfile) -> bool:
+    return smoke_test_profile_detailed(ffmpeg, profile).ok
 
 
 def _ordered_candidates(override: str, available: set[str]) -> Iterable[EncoderProfile]:
@@ -177,23 +214,49 @@ def _ordered_candidates(override: str, available: set[str]) -> Iterable[EncoderP
             yield profile
 
 
-def select_encoder(ffmpeg: str) -> EncoderProfile:
+def _append_result(lines: list[str], profile: EncoderProfile, result: SmokeTestResult) -> None:
+    code = "none" if result.return_code is None else str(result.return_code)
+    state = "passed" if result.ok else "failed"
+    lines.append(f"encoder {profile.codec}: {state}; exitCode={code}")
+    for detail_line in result.details.splitlines() or [""]:
+        lines.append(f"stderr: {detail_line}")
+
+
+def select_encoder(ffmpeg: str, diagnostic_lines: list[str] | None = None) -> EncoderProfile:
     override = os.environ.get("MEDIA_ENGINE_VIDEO_ENCODER", "auto")
     cache_key = (os.path.normcase(os.path.abspath(ffmpeg)), override.strip().lower())
     with _CACHE_LOCK:
         cached = _CACHE.get(cache_key)
     if cached is not None:
+        if diagnostic_lines is not None:
+            diagnostic_lines.append(f"cachedSelection={cached.key}")
         return cached
 
     available = discover_encoder_names(ffmpeg)
+    if diagnostic_lines is not None:
+        diagnostic_lines.append(f"override={override.strip().lower() or 'auto'}")
+        diagnostic_lines.append("advertisedEncoders=" + ",".join(sorted(available)))
+        for profile in _PROFILES:
+            if profile.codec not in available:
+                diagnostic_lines.append(f"encoder {profile.codec}: not advertised")
+
     selected = _SOFTWARE_PROFILE
     for profile in _ordered_candidates(override, available):
         if not profile.hardware:
             selected = profile
             break
-        if smoke_test_profile(ffmpeg, profile):
+        if diagnostic_lines is None:
+            passed = smoke_test_profile(ffmpeg, profile)
+        else:
+            result = smoke_test_profile_detailed(ffmpeg, profile)
+            _append_result(diagnostic_lines, profile, result)
+            passed = result.ok
+        if passed:
             selected = profile
             break
+
+    if diagnostic_lines is not None:
+        diagnostic_lines.append(f"selected: {selected.key}")
 
     with _CACHE_LOCK:
         _CACHE[cache_key] = selected
