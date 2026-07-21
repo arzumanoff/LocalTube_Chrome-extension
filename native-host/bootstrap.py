@@ -57,7 +57,10 @@ def run_maintenance_command(args: Sequence[str], directory: Path) -> int | None:
     ffmpeg = _ffmpeg_path(directory)
     destination = profile_path(ffmpeg)
     payload = detect_and_store(ffmpeg, destination)
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
+    # Machine-readable maintenance output must be safe even when Windows starts
+    # the console process with a legacy code page such as cp1252. JSON escapes
+    # preserve the original Unicode value for PowerShell ConvertFrom-Json.
+    print(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), flush=True)
     return 0
 
 
