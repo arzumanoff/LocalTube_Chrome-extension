@@ -16,6 +16,7 @@ from engine import (  # noqa: E402
     build_qualities,
     is_supported_url,
     parse_quality_id,
+    source_processing_mode,
 )
 from host import sanitize_suggested_filename  # noqa: E402
 from protocol import MessageWriter, ProtocolError, read_message  # noqa: E402
@@ -43,6 +44,17 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(qualities[0]["requiresMerge"])
         self.assertFalse(qualities[0]["requiresTranscode"])
         self.assertFalse(qualities[-1]["requiresMerge"])
+        self.assertFalse(qualities[-1]["requiresTranscode"])
+
+    def test_progressive_non_h264_is_transcode_not_merge(self) -> None:
+        formats = [
+            {"height": 360, "fps": 30, "vcodec": "vp9", "acodec": "opus", "ext": "webm"},
+            {"height": 360, "fps": 30, "vcodec": "avc1.42001E", "acodec": "none", "ext": "mp4"},
+            {"height": None, "vcodec": "none", "acodec": "mp4a.40.2", "ext": "m4a"},
+        ]
+        quality = build_qualities(formats)[0]
+        self.assertFalse(quality["requiresMerge"])
+        self.assertTrue(quality["requiresTranscode"])
 
     def test_marks_non_h264_quality_for_transcode(self) -> None:
         formats = [
@@ -53,12 +65,29 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(quality["label"], "2160p60")
         self.assertTrue(quality["requiresTranscode"])
 
+    def test_exact_selector_prefers_ready_progressive_mp4(self) -> None:
+        selector = build_format_selector("h360-f30")
+        choices = selector.split("/")
+        self.assertTrue(choices[0].startswith("best[height=360][fps<=30]"))
+        self.assertIn("[vcodec^=avc1]", choices[0])
+        self.assertIn("[acodec^=mp4a]", choices[0])
+        self.assertIn("bestvideo", selector)
+
     def test_exact_selector_never_requests_higher_height(self) -> None:
         selector = build_format_selector("h1080-f60")
         self.assertIn("[height=1080]", selector)
         self.assertNotIn("height<=", selector)
         self.assertNotIn("2160", selector)
         self.assertIn("[fps>=59][fps<=60]", selector)
+
+    def test_ready_mp4_skips_ffmpeg(self) -> None:
+        info = {"videoCodec": "h264", "audioCodec": "aac"}
+        self.assertEqual(source_processing_mode(Path("source.mp4"), info), "ready")
+        self.assertEqual(source_processing_mode(Path("source.mkv"), info), "remux")
+        self.assertEqual(
+            source_processing_mode(Path("source.webm"), {"videoCodec": "vp9", "audioCodec": "opus"}),
+            "transcode",
+        )
 
     def test_parse_quality_rejects_invalid_value(self) -> None:
         self.assertEqual(parse_quality_id("h720-f30"), (720, 30))
