@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import subprocess
 import time
@@ -10,12 +9,33 @@ from typing import Any, Callable
 
 import engine
 import hardware_encoding
+import hardware_profile
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _APPLIED = False
 _ORIGINAL_RUN_DOWNLOAD = engine.run_download
+
+_ENCODER_INIT_HINTS = (
+    "error while opening encoder",
+    "failed to initialize encoder",
+    "failed to initialise encoder",
+    "initialization failed",
+    "initialisation failed",
+    "no capable devices",
+    "unsupported device",
+    "cannot load",
+    "could not initialize",
+    "could not initialise",
+    "failed to create encoder",
+    "failed to open encoder",
+)
+_ENCODER_BACKEND_HINTS = {
+    "nvidia-nvenc": ("nvenc", "nvidia", "cuda", "nvcuda"),
+    "amd-amf": ("amf", "amd"),
+    "intel-qsv": ("qsv", "quick sync", "mfx", "intel"),
+}
 
 
 def _clean_progress_text(value: Any) -> str:
@@ -28,8 +48,6 @@ def _parse_ffmpeg_time(key: str, value: str) -> float | None:
     if key not in {"out_time_us", "out_time_ms"}:
         return None
     try:
-        # FFmpeg reports both keys in microseconds despite the historical
-        # out_time_ms name.
         return max(0.0, int(value) / 1_000_000)
     except (TypeError, ValueError):
         return None
@@ -74,6 +92,19 @@ def _build_transcode_args(profile: hardware_encoding.EncoderProfile) -> list[str
     if profile.hardware:
         return ["-vf", "format=nv12", *profile.args, "-profile:v", "high"]
     return [*profile.args, "-pix_fmt", "yuv420p", "-profile:v", "high"]
+
+
+def _is_encoder_initialization_failure(
+    error: engine.EngineError,
+    profile: hardware_encoding.EncoderProfile,
+) -> bool:
+    if not profile.hardware or error.code != "FFMPEG_FAILED":
+        return False
+    text = str(error).lower()
+    backend_hints = _ENCODER_BACKEND_HINTS.get(profile.key, (profile.codec.lower(),))
+    return any(hint in text for hint in _ENCODER_INIT_HINTS) and any(
+        hint in text for hint in backend_hints
+    )
 
 
 def _run_ffmpeg_once(
@@ -187,6 +218,14 @@ def _run_ffmpeg_once(
         process_holder.pop("process", None)
 
 
+def _load_runtime_profile(ffmpeg: str) -> tuple[hardware_encoding.EncoderProfile, Path]:
+    stored_path = hardware_profile.profile_path(ffmpeg)
+    payload = hardware_profile.load_verified_profile(stored_path, ffmpeg)
+    if payload is None:
+        payload = hardware_profile.detect_and_store(ffmpeg, stored_path)
+    return hardware_encoding.profile_by_key(str(payload["encoderKey"])), stored_path
+
+
 def _run_ffmpeg(
     source: Path,
     target: Path,
@@ -213,47 +252,57 @@ def _run_ffmpeg(
         )
         return
 
-    selected = hardware_encoding.select_encoder(ffmpeg)
+    selected, stored_path = _load_runtime_profile(ffmpeg)
+    _remove_file_safely(target)
+    try:
+        _run_ffmpeg_once(
+            ffmpeg=ffmpeg,
+            source=source,
+            target=target,
+            duration=duration,
+            copy_streams=False,
+            profile=selected,
+            job_id=job_id,
+            cancel_event=cancel_event,
+            process_holder=process_holder,
+            emit=emit,
+        )
+        return
+    except engine.EngineError as exc:
+        if exc.code == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
+            raise
+        if not _is_encoder_initialization_failure(exc, selected):
+            raise
+
+    hardware_profile.mark_profile_stale(stored_path)
+    _remove_file_safely(target)
     software = hardware_encoding.profile_by_key("software-x264")
-    attempts = [selected]
-    if selected.hardware:
-        attempts.append(software)
-
-    last_error: engine.EngineError | None = None
-    for index, profile in enumerate(attempts):
-        _remove_file_safely(target)
-        try:
-            _run_ffmpeg_once(
-                ffmpeg=ffmpeg,
-                source=source,
-                target=target,
-                duration=duration,
-                copy_streams=False,
-                profile=profile,
-                job_id=job_id,
-                cancel_event=cancel_event,
-                process_holder=process_holder,
-                emit=emit,
-            )
-            return
-        except engine.EngineError as exc:
-            if exc.code == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
-                raise
-            last_error = exc
-            if index + 1 >= len(attempts):
-                raise
-            emit({
-                "event": "progress",
-                "jobId": job_id,
-                "stage": "converting",
-                "percent": 0,
-                "encoder": software.key,
-                "encoderLabel": f"{software.label} — резервный режим",
-                "hardware": False,
-            })
-
-    if last_error is not None:
-        raise last_error
+    emit({
+        "event": "progress",
+        "jobId": job_id,
+        "stage": "converting",
+        "percent": 0,
+        "encoder": software.key,
+        "encoderLabel": f"{software.label} — резервный режим",
+        "hardware": False,
+    })
+    _run_ffmpeg_once(
+        ffmpeg=ffmpeg,
+        source=source,
+        target=target,
+        duration=duration,
+        copy_streams=False,
+        profile=software,
+        job_id=job_id,
+        cancel_event=cancel_event,
+        process_holder=process_holder,
+        emit=emit,
+    )
+    try:
+        hardware_profile.detect_and_store(ffmpeg, stored_path)
+    except (OSError, ValueError, RuntimeError):
+        # The completed user file is more important than maintenance re-detection.
+        pass
 
 
 def _run_download_with_fixes(*, emit: ProgressCallback, **kwargs: Any) -> dict[str, Any]:
@@ -270,8 +319,6 @@ def _run_download_with_fixes(*, emit: ProgressCallback, **kwargs: Any) -> dict[s
     try:
         return _ORIGINAL_RUN_DOWNLOAD(emit=clean_emit, **kwargs)
     except PermissionError as exc:
-        # A just-terminated FFmpeg process may keep the Windows file handle for
-        # a fraction of a second. Never let cleanup replace the real cancel state.
         if output_path and job_id:
             final_path = Path(output_path).expanduser().resolve()
             partial = final_path.with_name(f".{final_path.stem}.{job_id}.partial.mp4")
