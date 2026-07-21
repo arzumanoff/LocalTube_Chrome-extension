@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -87,7 +88,7 @@ class HardwareEncodingTests(unittest.TestCase):
         smoke.assert_called_once()
 
     def test_smoke_uses_exact_profile_arguments(self) -> None:
-        completed = Mock(returncode=0)
+        completed = Mock(returncode=0, stderr="")
         profile = hardware_encoding.profile_by_key("amd-amf")
         with patch("hardware_encoding.subprocess.run", return_value=completed) as runner:
             self.assertTrue(hardware_encoding.smoke_test_profile("ffmpeg.exe", profile))
@@ -95,6 +96,28 @@ class HardwareEncodingTests(unittest.TestCase):
         self.assertIn("h264_amf", command)
         self.assertIn("-frames:v", command)
         self.assertEqual(command[-2:], ["null", "-"])
+
+    def test_detailed_smoke_preserves_exit_code_and_ffmpeg_error(self) -> None:
+        completed = Mock(returncode=1, stderr="[h264_amf] DLL amfrt64.dll failed to open\n")
+        profile = hardware_encoding.profile_by_key("amd-amf")
+        with patch("hardware_encoding.subprocess.run", return_value=completed):
+            result = hardware_encoding.smoke_test_profile_detailed("ffmpeg.exe", profile)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.return_code, 1)
+        self.assertIn("amfrt64.dll", result.details)
+
+    def test_detailed_smoke_records_timeout(self) -> None:
+        profile = hardware_encoding.profile_by_key("amd-amf")
+        with patch(
+            "hardware_encoding.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["ffmpeg.exe"], 15, stderr=b"probe timed out"),
+        ):
+            result = hardware_encoding.smoke_test_profile_detailed("ffmpeg.exe", profile)
+
+        self.assertFalse(result.ok)
+        self.assertIsNone(result.return_code)
+        self.assertIn("timed out", result.details.lower())
 
 
 if __name__ == "__main__":
