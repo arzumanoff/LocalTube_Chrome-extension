@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import engine
+import hardware_encoding
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -69,17 +70,25 @@ def _remove_file_safely(path: Path, attempts: int = 20, delay: float = 0.1) -> b
     return not path.exists()
 
 
-def _run_ffmpeg(
+def _build_transcode_args(profile: hardware_encoding.EncoderProfile) -> list[str]:
+    if profile.hardware:
+        return ["-vf", "format=nv12", *profile.args, "-profile:v", "high"]
+    return [*profile.args, "-pix_fmt", "yuv420p", "-profile:v", "high"]
+
+
+def _run_ffmpeg_once(
+    *,
+    ffmpeg: str,
     source: Path,
     target: Path,
     duration: float,
     copy_streams: bool,
+    profile: hardware_encoding.EncoderProfile | None,
     job_id: str,
     cancel_event: Any,
     process_holder: dict[str, Any],
     emit: ProgressCallback,
 ) -> None:
-    ffmpeg = engine.find_binary("ffmpeg")
     command = [
         ffmpeg,
         "-y",
@@ -91,17 +100,15 @@ def _run_ffmpeg(
     if copy_streams:
         command += ["-c", "copy"]
         stage = "merging"
+        encoder_label = "Без перекодирования"
+        hardware = False
     else:
-        # Fast is substantially more practical for 4K than medium while still
-        # producing a compatible H.264/AAC MP4 at the original resolution.
-        command += [
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
-            "-c:a", "aac",
-            "-b:a", "192k",
-        ]
+        assert profile is not None
+        command += _build_transcode_args(profile)
+        command += ["-c:a", "aac", "-b:a", "192k"]
         stage = "converting"
+        encoder_label = profile.label
+        hardware = profile.hardware
     command += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(target)]
 
     emit({
@@ -109,7 +116,9 @@ def _run_ffmpeg(
         "jobId": job_id,
         "stage": stage,
         "percent": 0,
-        "speed": "Обработка может занять несколько минут" if stage == "converting" else "",
+        "encoder": profile.key if profile is not None else "stream-copy",
+        "encoderLabel": encoder_label,
+        "hardware": hardware,
     })
     process = subprocess.Popen(
         command,
@@ -153,6 +162,9 @@ def _run_ffmpeg(
                     "percent": percent,
                     "speed": f"{speed_factor:.2f}x" if speed_factor > 0 else "",
                     "eta": eta,
+                    "encoder": profile.key if profile is not None else "stream-copy",
+                    "encoderLabel": encoder_label,
+                    "hardware": hardware,
                 })
 
             if cancel_event.is_set():
@@ -173,6 +185,75 @@ def _run_ffmpeg(
             except OSError:
                 pass
         process_holder.pop("process", None)
+
+
+def _run_ffmpeg(
+    source: Path,
+    target: Path,
+    duration: float,
+    copy_streams: bool,
+    job_id: str,
+    cancel_event: Any,
+    process_holder: dict[str, Any],
+    emit: ProgressCallback,
+) -> None:
+    ffmpeg = engine.find_binary("ffmpeg")
+    if copy_streams:
+        _run_ffmpeg_once(
+            ffmpeg=ffmpeg,
+            source=source,
+            target=target,
+            duration=duration,
+            copy_streams=True,
+            profile=None,
+            job_id=job_id,
+            cancel_event=cancel_event,
+            process_holder=process_holder,
+            emit=emit,
+        )
+        return
+
+    selected = hardware_encoding.select_encoder(ffmpeg)
+    software = hardware_encoding.profile_by_key("software-x264")
+    attempts = [selected]
+    if selected.hardware:
+        attempts.append(software)
+
+    last_error: engine.EngineError | None = None
+    for index, profile in enumerate(attempts):
+        _remove_file_safely(target)
+        try:
+            _run_ffmpeg_once(
+                ffmpeg=ffmpeg,
+                source=source,
+                target=target,
+                duration=duration,
+                copy_streams=False,
+                profile=profile,
+                job_id=job_id,
+                cancel_event=cancel_event,
+                process_holder=process_holder,
+                emit=emit,
+            )
+            return
+        except engine.EngineError as exc:
+            if exc.code == "DOWNLOAD_CANCELLED" or cancel_event.is_set():
+                raise
+            last_error = exc
+            if index + 1 >= len(attempts):
+                raise
+            emit({
+                "event": "progress",
+                "jobId": job_id,
+                "stage": "converting",
+                "percent": 0,
+                "encoder": software.key,
+                "encoderLabel": f"{software.label} — резервный режим",
+                "hardware": False,
+            })
+
+    if last_error is not None:
+        raise last_error
 
 
 def _run_download_with_fixes(*, emit: ProgressCallback, **kwargs: Any) -> dict[str, Any]:
