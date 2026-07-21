@@ -173,6 +173,13 @@ jobs:
             Pop-Location
           }
 
+      - name: Smoke reinstall while Native Host is running
+        shell: powershell
+        run: |
+          $EngineDir = Join-Path $PWD 'native-host\release\media-engine-test-package\engine'
+          $InstalledHost = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\media-engine-host.exe'
+          python native-host/tests/smoke_reinstall_running_host.py $EngineDir $InstalledHost
+
       - name: Verify persisted hardware profile
         shell: powershell
         run: |
