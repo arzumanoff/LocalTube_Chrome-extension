@@ -32,6 +32,7 @@ def main() -> int:
     transcode_target = remux_target.with_name("transcoded.mp4")
     os.environ["MEDIA_ENGINE_FFMPEG"] = str(Path(sys.argv[3]).resolve())
     os.environ["MEDIA_ENGINE_FFPROBE"] = str(Path(sys.argv[4]).resolve())
+    os.environ["MEDIA_ENGINE_VIDEO_ENCODER"] = "software"
     apply()
 
     source_info = engine.inspect_media(source)
@@ -66,13 +67,10 @@ def main() -> int:
     converting = [event for event in transcode_events if event.get("stage") == "converting"]
     if not converting:
         raise AssertionError(f"missing converting progress: {transcode_events}")
-    if not converting[-1].get("encoder"):
-        raise AssertionError(f"encoder was not reported: {transcode_events}")
+    if converting[-1].get("encoder") != "software-x264":
+        raise AssertionError(f"unexpected CI encoder: {transcode_events}")
 
-    print(
-        "media pipeline smoke passed; encoder="
-        + str(converting[-1].get("encoderLabel") or converting[-1].get("encoder"))
-    )
+    print("media pipeline smoke passed; encoder=software-x264")
     return 0
 
 
