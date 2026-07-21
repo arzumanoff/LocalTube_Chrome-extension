@@ -34,7 +34,7 @@ A new hardware detection is allowed only when:
 1. the engine is installed or updated;
 2. the user explicitly requests hardware re-detection;
 3. the persisted encoder fails during a real transcode;
-4. the profile file is missing, unreadable, unsupported, or structurally invalid.
+4. the profile file is missing, unreadable, unsupported, structurally invalid, or belongs to a different FFmpeg build.
 
 ## Supported Profiles
 
@@ -96,7 +96,7 @@ Schema version 1:
   "hardware": true,
   "status": "verified",
   "testedAt": "2026-07-21T12:00:00Z",
-  "ffmpegFingerprint": "<stable FFmpeg build fingerprint>"
+  "ffmpegFingerprint": "sha256:8dbd630df0532ad7d42d85ca8d3a3fa0f95fe6a2f65062a8f7606c5b9f2a47ad"
 }
 ```
 
@@ -113,9 +113,9 @@ The file must be written through a temporary file followed by an atomic replacem
 
 The persisted profile must include a fingerprint derived from the bundled FFmpeg build used during detection.
 
-At minimum, the fingerprint must change when the installed `ffmpeg.exe` changes. A SHA-256 hash of `ffmpeg.exe` is acceptable.
+The fingerprint is the lowercase SHA-256 hash of the installed `ffmpeg.exe`, prefixed with `sha256:`.
 
-When the current FFmpeg fingerprint differs from the stored fingerprint, the profile is stale and must be regenerated during installation or before the next transcode.
+When the current FFmpeg fingerprint differs from the stored fingerprint, the profile is stale and must be regenerated during installation or once before the next transcode.
 
 ## Runtime Flow
 
@@ -152,6 +152,8 @@ load hardware-profile.json
 
 There must be no normal per-download iteration through NVENC, AMF, and QSV.
 
+When the profile is missing or invalid, the Host performs one synchronous detection before that transcode, persists the result, and then continues. Subsequent downloads use the persisted result directly.
+
 ## Failure Handling
 
 If the stored hardware encoder fails during a real transcode:
@@ -169,19 +171,26 @@ Input corruption, insufficient disk space, an inaccessible output path, invalid 
 
 ## Explicit Re-Detection
 
-The engine must expose one maintenance action:
+The Windows engine package must include this maintenance launcher:
+
+```text
+REDETECT_HARDWARE.cmd
+```
+
+It displays the user-facing action:
 
 ```text
 Проверить оборудование заново
 ```
 
-For the MVP this may be implemented as an installer repair action or a dedicated command-line/helper entry point. It does not need to appear in the YouTube modal.
-
-The action must:
+The launcher must:
 
 1. run the same detection used by installation;
 2. replace the profile atomically;
-3. report the selected encoder.
+3. report the selected encoder;
+4. require no administrator rights.
+
+This maintenance action does not appear in the YouTube download modal.
 
 ## User Interface
 
@@ -270,7 +279,7 @@ The Windows workflow must:
 5. prove no second detection occurs during that transcode;
 6. simulate an encoder-initialization failure and verify one software fallback plus profile invalidation;
 7. verify cancellation cleanup still releases the temporary file;
-8. verify install, Native Messaging ping, and uninstall continue to pass.
+8. verify install, Native Messaging ping, maintenance re-detection, and uninstall continue to pass.
 
 Real NVENC, AMF, and Quick Sync execution must be verified on representative physical machines before public release because GitHub-hosted runners do not provide those GPUs.
 
@@ -287,6 +296,7 @@ The feature is complete when:
 - replacing `ffmpeg.exe` invalidates the old fingerprint;
 - a real encoder initialization failure retries once through `libx264` and schedules one re-detection;
 - cancellation does not invalidate the profile;
+- `REDETECT_HARDWARE.cmd` replaces the profile and reports the result;
 - the extension displays the encoder label supplied by the Host;
 - ready MP4 and stream-copy merge paths remain unchanged.
 
