@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 PROFILE_FILENAME = "hardware-profile.json"
+DETECTION_LOG_FILENAME = "hardware-detection.log"
 SCHEMA_VERSION = 1
 ALLOWED_ENCODER_KEYS = {
     "nvidia-nvenc",
@@ -27,6 +28,13 @@ def profile_path(ffmpeg: str | Path) -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return Path(ffmpeg).expanduser().resolve().parent / PROFILE_FILENAME
+
+
+def detection_log_path(profile_destination: Path) -> Path:
+    override = os.environ.get("MEDIA_ENGINE_HARDWARE_LOG", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return profile_destination.expanduser().resolve().parent / "logs" / DETECTION_LOG_FILENAME
 
 
 @lru_cache(maxsize=8)
@@ -91,10 +99,7 @@ def read_profile(path: Path) -> dict[str, Any] | None:
     return _validated_payload(payload)
 
 
-def write_profile_atomic(path: Path, payload: dict[str, Any]) -> None:
-    validated = _validated_payload(payload)
-    if validated is None:
-        raise ValueError("Invalid hardware profile payload.")
+def _write_text_atomic(path: Path, text: str) -> None:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -108,8 +113,9 @@ def write_profile_atomic(path: Path, payload: dict[str, Any]) -> None:
             suffix=".tmp",
             delete=False,
         ) as stream:
-            json.dump(validated, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
+            stream.write(text)
+            if not text.endswith("\n"):
+                stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
             temporary_path = Path(stream.name)
@@ -121,6 +127,13 @@ def write_profile_atomic(path: Path, payload: dict[str, Any]) -> None:
                 temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def write_profile_atomic(path: Path, payload: dict[str, Any]) -> None:
+    validated = _validated_payload(payload)
+    if validated is None:
+        raise ValueError("Invalid hardware profile payload.")
+    _write_text_atomic(path, json.dumps(validated, ensure_ascii=False, indent=2))
 
 
 def build_profile_payload(profile: Any, ffmpeg: str | Path) -> dict[str, Any]:
@@ -161,8 +174,31 @@ def detect_and_store(ffmpeg: str | Path, destination: Path | None = None) -> dic
     from hardware_encoding import clear_encoder_cache, select_encoder
 
     ffmpeg_path = Path(ffmpeg).expanduser().resolve()
+    destination_path = (destination or profile_path(ffmpeg_path)).expanduser().resolve()
+    log_path = detection_log_path(destination_path)
+    fingerprint = ffmpeg_fingerprint(ffmpeg_path)
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    diagnostic_lines = [
+        f"startedAt={started_at}",
+        f"ffmpegPath={ffmpeg_path}",
+        f"ffmpegFingerprint={fingerprint}",
+    ]
+
     clear_encoder_cache()
-    selected = select_encoder(str(ffmpeg_path))
-    payload = build_profile_payload(selected, ffmpeg_path)
-    write_profile_atomic(destination or profile_path(ffmpeg_path), payload)
-    return payload
+    try:
+        selected = select_encoder(str(ffmpeg_path), diagnostic_lines=diagnostic_lines)
+        payload = build_profile_payload(selected, ffmpeg_path)
+        write_profile_atomic(destination_path, payload)
+        diagnostic_lines.append(f"selectedDisplayName={payload['displayName']}")
+        diagnostic_lines.append(f"profilePath={destination_path}")
+        diagnostic_lines.append("result=success")
+        return payload
+    except Exception as exc:
+        diagnostic_lines.append(f"result=failure")
+        diagnostic_lines.append(f"exception={type(exc).__name__}: {exc}")
+        raise
+    finally:
+        diagnostic_lines.append(
+            "finishedAt=" + datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        )
+        _write_text_atomic(log_path, "\n".join(diagnostic_lines))
