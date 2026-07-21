@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -76,6 +77,28 @@ class HardwareProfileTests(unittest.TestCase):
     def test_fingerprint_format_is_sha256(self) -> None:
         fingerprint = hardware_profile.ffmpeg_fingerprint(self.ffmpeg)
         self.assertRegex(fingerprint, r"^sha256:[0-9a-f]{64}$")
+
+    def test_detection_writes_detailed_log_next_to_profile(self) -> None:
+        def select(_ffmpeg: str, diagnostic_lines: list[str] | None = None):
+            assert diagnostic_lines is not None
+            diagnostic_lines.extend([
+                "encoder h264_nvenc: not advertised",
+                "encoder h264_amf: failed; exitCode=1",
+                "stderr: AMF failed to initialise",
+                "selected: software-x264",
+            ])
+            return self.profile
+
+        with patch("hardware_encoding.select_encoder", side_effect=select):
+            hardware_profile.detect_and_store(self.ffmpeg, self.path)
+
+        log_path = self.root / "logs" / "hardware-detection.log"
+        self.assertTrue(log_path.is_file())
+        text = log_path.read_text(encoding="utf-8")
+        self.assertIn("h264_amf", text)
+        self.assertIn("AMF failed to initialise", text)
+        self.assertIn("selected: software-x264", text)
+        self.assertIn("ffmpegFingerprint=sha256:", text)
 
 
 if __name__ == "__main__":
