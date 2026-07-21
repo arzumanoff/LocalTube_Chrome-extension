@@ -46,15 +46,15 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(qualities[-1]["requiresMerge"])
         self.assertFalse(qualities[-1]["requiresTranscode"])
 
-    def test_progressive_non_h264_is_transcode_not_merge(self) -> None:
+    def test_prefers_clean_adaptive_pair_over_bad_progressive_file(self) -> None:
         formats = [
             {"height": 360, "fps": 30, "vcodec": "vp9", "acodec": "opus", "ext": "webm"},
             {"height": 360, "fps": 30, "vcodec": "avc1.42001E", "acodec": "none", "ext": "mp4"},
             {"height": None, "vcodec": "none", "acodec": "mp4a.40.2", "ext": "m4a"},
         ]
         quality = build_qualities(formats)[0]
-        self.assertFalse(quality["requiresMerge"])
-        self.assertTrue(quality["requiresTranscode"])
+        self.assertTrue(quality["requiresMerge"])
+        self.assertFalse(quality["requiresTranscode"])
 
     def test_marks_non_h264_quality_for_transcode(self) -> None:
         formats = [
