@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import struct
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -11,12 +12,18 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from engine import (  # noqa: E402
-    EngineError,
+from runtime_fixes import (  # noqa: E402
     _clean_progress_text,
     _parse_ffmpeg_time,
     _remove_file_safely,
     _stop_process,
+    apply,
+)
+
+apply()
+
+from engine import (  # noqa: E402
+    EngineError,
     build_format_selector,
     build_qualities,
     is_supported_url,
@@ -107,9 +114,8 @@ class EngineTests(unittest.TestCase):
     def test_stop_process_waits_then_kills_if_needed(self) -> None:
         process = MagicMock()
         process.poll.return_value = None
-        process.wait.side_effect = [TimeoutError(), 0]
-        with patch("engine.subprocess.TimeoutExpired", TimeoutError):
-            _stop_process(process, timeout=0.01)
+        process.wait.side_effect = [subprocess.TimeoutExpired("ffmpeg", 0.01), 0]
+        _stop_process(process, timeout=0.01)
         process.terminate.assert_called_once()
         process.kill.assert_called_once()
         self.assertEqual(process.wait.call_count, 2)
@@ -118,7 +124,7 @@ class EngineTests(unittest.TestCase):
         path = MagicMock(spec=Path)
         path.exists.return_value = True
         path.unlink.side_effect = PermissionError(32, "locked")
-        with patch("engine.time.sleep"):
+        with patch("runtime_fixes.time.sleep"):
             self.assertFalse(_remove_file_safely(path, attempts=2, delay=0))
         self.assertEqual(path.unlink.call_count, 2)
 
