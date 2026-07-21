@@ -70,6 +70,25 @@ jobs:
           & (Join-Path $Tools 'ffprobe.exe') -version | Select-Object -First 1
           & (Join-Path $Tools 'deno.exe') --version | Select-Object -First 1
 
+      - name: Smoke real FFmpeg remux pipeline
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Tools = Join-Path $PWD 'native-host\tools'
+          $Smoke = Join-Path $env:RUNNER_TEMP 'media-pipeline-smoke'
+          New-Item -ItemType Directory -Path $Smoke -Force | Out-Null
+          $Source = Join-Path $Smoke 'source.mkv'
+          $Target = Join-Path $Smoke 'result.mp4'
+          & (Join-Path $Tools 'ffmpeg.exe') -y -loglevel error `
+            -f lavfi -i 'testsrc=size=640x360:rate=30' `
+            -f lavfi -i 'sine=frequency=1000:sample_rate=48000' `
+            -t 2 -c:v libx264 -pix_fmt yuv420p -c:a aac $Source
+          if ($LASTEXITCODE -ne 0) { throw 'Synthetic media generation failed.' }
+          python native-host/tests/smoke_media_pipeline.py `
+            $Source $Target `
+            (Join-Path $Tools 'ffmpeg.exe') `
+            (Join-Path $Tools 'ffprobe.exe')
+
       - name: Assemble extension and engine package
         shell: powershell
         run: |
