@@ -127,7 +127,7 @@ def _smoke_command(ffmpeg: str, profile: EncoderProfile) -> list[str]:
         "-hide_banner",
         "-loglevel", "error",
         "-f", "lavfi",
-        "-i", "color=c=black:s=128x72:r=30",
+        "-i", "color=c=black:s=1280x720:r=30",
         "-frames:v", "1",
         "-an",
         "-pix_fmt", "nv12",
