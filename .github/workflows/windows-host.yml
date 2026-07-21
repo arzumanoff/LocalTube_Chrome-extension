@@ -11,6 +11,8 @@ permissions:
 jobs:
   build-and-smoke:
     runs-on: windows-latest
+    env:
+      MEDIA_ENGINE_STDOUT_DIAGNOSTIC: '1'
     steps:
       - uses: actions/checkout@v4
 
