@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
 import traceback
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from engine import EngineError, is_supported_url, probe_video, run_download
-from protocol import MessageWriter, ProtocolError, read_message
+from protocol import MessageWriter, ProtocolError, read_message, reserve_native_stdout
 
-HOST_VERSION = "0.1.0"
+HOST_VERSION = "0.1.1"
 INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+URL_IN_LOG = re.compile(r"https?://\S+", re.IGNORECASE)
 RESERVED_WINDOWS_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
@@ -29,13 +32,31 @@ class JobState:
     thread: threading.Thread | None = None
 
 
-writer = MessageWriter()
+writer = MessageWriter(reserve_native_stdout())
 jobs: dict[str, JobState] = {}
 jobs_lock = threading.Lock()
+log_lock = threading.Lock()
+
+
+def host_log_path() -> Path:
+    base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or Path.home())
+    return base / "ArzumanoffMediaEngine" / "logs" / "host.log"
 
 
 def log(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    safe = URL_IN_LOG.sub("[url]", str(message))
+    line = f"{datetime.now(timezone.utc).isoformat()} {safe}"
+    with log_lock:
+        print(line, file=sys.stderr, flush=True)
+        try:
+            path = host_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > 1_000_000:
+                path.write_text("", encoding="utf-8")
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+        except OSError:
+            pass
 
 
 def response(request_id: str, **payload: Any) -> None:
@@ -87,6 +108,7 @@ def finish_job(job_id: str) -> None:
 
 
 def download_worker(job: JobState, url: str, quality_id: str, output_path: str) -> None:
+    log(f"job {job.job_id} worker started quality={quality_id}")
     try:
         result = run_download(
             url=url,
@@ -109,8 +131,10 @@ def download_worker(job: JobState, url: str, quality_id: str, output_path: str) 
             "audioCodec": result["audioCodec"],
             "size": result["size"],
         })
+        log(f"job {job.job_id} completed")
     except EngineError as exc:
         stage = "cancelled" if exc.code == "DOWNLOAD_CANCELLED" else "failed"
+        log(f"job {job.job_id} engine error code={exc.code}: {exc}")
         emit({
             "event": "progress",
             "jobId": job.job_id,
@@ -141,9 +165,12 @@ def handle_probe(request_id: str, message: dict[str, Any]) -> None:
         response(request_id, ok=False, errorCode="INVALID_VIDEO_URL", message="Некорректная ссылка YouTube.")
         return
     try:
+        log("probe started")
         data = probe_video(url)
         response(request_id, ok=True, **data)
+        log(f"probe completed qualities={len(data.get('qualities') or [])}")
     except EngineError as exc:
+        log(f"probe engine error code={exc.code}: {exc}")
         response(request_id, ok=False, errorCode=exc.code, message=str(exc))
     except Exception as exc:
         log(traceback.format_exc())
@@ -164,8 +191,10 @@ def handle_download(request_id: str, message: dict[str, Any]) -> None:
             return
 
     try:
+        log(f"download requested quality={quality_id}; opening save dialog")
         output_path = choose_output_file(suggested_filename)
     except EngineError as exc:
+        log(f"save dialog engine error code={exc.code}: {exc}")
         response(request_id, ok=False, errorCode=exc.code, message=str(exc))
         return
     except Exception as exc:
@@ -174,6 +203,7 @@ def handle_download(request_id: str, message: dict[str, Any]) -> None:
         return
 
     if not output_path:
+        log("save dialog cancelled")
         response(
             request_id,
             ok=False,
@@ -195,6 +225,7 @@ def handle_download(request_id: str, message: dict[str, Any]) -> None:
     with jobs_lock:
         jobs[job_id] = job
     response(request_id, ok=True, jobId=job_id, stage="preparing")
+    log(f"job {job_id} accepted")
     thread.start()
 
 
@@ -212,6 +243,7 @@ def handle_cancel(request_id: str, message: dict[str, Any]) -> None:
             process.terminate()
         except OSError:
             pass
+    log(f"job {job_id} cancel requested")
     response(request_id, ok=True, jobId=job_id, stage="cancelled")
 
 
@@ -238,6 +270,7 @@ def main() -> int:
         try:
             message = read_message()
             if message is None:
+                log("native input closed")
                 return 0
             handle_message(message)
         except ProtocolError as exc:
