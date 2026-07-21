@@ -3,6 +3,7 @@ name: Diagnose Hardware CLI
 on:
   push:
     branches: ['feat/native-engine-mvp']
+  pull_request:
 
 permissions:
   contents: read
