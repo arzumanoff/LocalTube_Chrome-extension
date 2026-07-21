@@ -5,6 +5,7 @@
   const BUTTON_ID = 'ytd-native-download-host';
   const MODAL_ID = 'ytd-native-download-modal';
   const core = globalThis.YTDCore || {};
+  const TERMINAL_STAGES = new Set(['completed', 'cancelled', 'failed']);
 
   let lastUrl = location.href;
   let mountTimer = null;
@@ -153,6 +154,10 @@
     shadow.querySelector('.error').textContent = `${response?.message || fallback}${code}`;
   }
 
+  function setQualityButtonsDisabled(shadow, disabled) {
+    shadow.querySelectorAll('.quality').forEach((button) => { button.disabled = disabled; });
+  }
+
   function setProgress(shadow, payload) {
     const stageLabels = {
       preparing: 'Подготовка…',
@@ -164,24 +169,31 @@
       cancelled: 'Скачивание отменено',
       failed: 'Ошибка скачивания',
     };
+    const stage = String(payload?.stage || '');
+    const terminal = TERMINAL_STAGES.has(stage);
     const percent = Number.isFinite(Number(payload?.percent))
       ? Math.max(0, Math.min(100, Number(payload.percent)))
       : null;
-    shadow.querySelector('.state').textContent = stageLabels[payload?.stage] || payload?.message || 'Выполняется…';
+    shadow.querySelector('.state').textContent = stageLabels[stage] || payload?.message || 'Выполняется…';
     shadow.querySelector('.percent').textContent = percent === null ? '' : `${Math.round(percent)}%`;
     shadow.querySelector('.bar i').style.width = percent === null ? '0%' : `${percent}%`;
     shadow.querySelector('.details').textContent = [payload?.speed, payload?.eta ? `Осталось: ${payload.eta} с` : ''].filter(Boolean).join(' · ');
-    shadow.querySelector('.error').textContent = payload?.stage === 'failed' ? (payload.message || 'Не удалось скачать видео.') : '';
+    shadow.querySelector('.error').textContent = stage === 'failed' ? (payload.message || 'Не удалось скачать видео.') : '';
 
     const actions = shadow.querySelector('.actions');
     actions.replaceChildren();
-    if (activeJobId && !['completed', 'cancelled', 'failed'].includes(payload?.stage)) {
+    if (activeJobId && !terminal) {
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'secondary';
       cancel.textContent = 'Отменить';
       cancel.addEventListener('click', () => cancelDownload(shadow));
       actions.append(cancel);
+    }
+
+    if (terminal) {
+      activeJobId = '';
+      setQualityButtonsDisabled(shadow, false);
     }
   }
 
@@ -194,6 +206,17 @@
     } catch (error) {
       setError(shadow, null, error.message);
     }
+  }
+
+  function showExistingJob(shadow, response) {
+    activeJobId = String(response?.jobId || '');
+    setQualityButtonsDisabled(shadow, true);
+    setProgress(shadow, {
+      stage: response?.stage || 'preparing',
+      percent: response?.percent,
+      message: response?.message,
+    });
+    shadow.querySelector('.error').textContent = 'Уже выполняется другое скачивание. Его можно отменить кнопкой ниже.';
   }
 
   async function beginDownload(shadow, quality) {
@@ -214,6 +237,10 @@
       if (!response?.ok) {
         if (response?.cancelled || response?.errorCode === 'SAVE_DIALOG_CANCELLED') {
           setProgress(shadow, { stage: 'cancelled' });
+          return;
+        }
+        if (response?.errorCode === 'BUSY' && response?.jobId) {
+          showExistingJob(shadow, response);
           return;
         }
         setError(shadow, response, 'Не удалось начать скачивание.');
@@ -259,6 +286,15 @@
     }
   }
 
+  async function restoreActiveJob(shadow) {
+    try {
+      const status = await send({ type: 'YTD_NATIVE_STATUS' });
+      if (status?.ok && status?.busy && status?.jobId) showExistingJob(shadow, status);
+    } catch {
+      // Probe already reports connection problems; status restoration is best-effort.
+    }
+  }
+
   async function probeCurrentVideo(shadow) {
     try {
       const response = await send({ type: 'YTD_NATIVE_PROBE', payload: { url: location.href } });
@@ -270,6 +306,7 @@
         return;
       }
       renderProbe(shadow, response);
+      await restoreActiveJob(shadow);
     } catch (error) {
       setError(shadow, null, isContextInvalidated(error)
         ? 'Расширение обновилось. Перезагрузите вкладку YouTube.'
