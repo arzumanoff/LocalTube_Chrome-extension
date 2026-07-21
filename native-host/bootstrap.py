@@ -35,6 +35,11 @@ def configure_runtime_environment() -> Path:
 
 def main() -> int:
     configure_runtime_environment()
+
+    # Apply narrowly scoped fixes before host.py imports engine functions.
+    from runtime_fixes import apply
+
+    apply()
     from host import main as host_main
 
     return host_main()
