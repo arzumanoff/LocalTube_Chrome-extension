@@ -6,13 +6,17 @@ import struct
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from engine import (  # noqa: E402
     EngineError,
+    _clean_progress_text,
+    _parse_ffmpeg_time,
+    _remove_file_safely,
+    _stop_process,
     build_format_selector,
     build_qualities,
     is_supported_url,
@@ -90,6 +94,33 @@ class EngineTests(unittest.TestCase):
             source_processing_mode(Path("source.webm"), {"videoCodec": "vp9", "audioCodec": "opus"}),
             "transcode",
         )
+
+    def test_ffmpeg_progress_accepts_microsecond_keys(self) -> None:
+        self.assertEqual(_parse_ffmpeg_time("out_time_us", "5000000"), 5.0)
+        self.assertEqual(_parse_ffmpeg_time("out_time_ms", "2500000"), 2.5)
+        self.assertIsNone(_parse_ffmpeg_time("frame", "25"))
+        self.assertIsNone(_parse_ffmpeg_time("out_time_us", "broken"))
+
+    def test_progress_text_removes_ansi_and_controls(self) -> None:
+        self.assertEqual(_clean_progress_text("\x1b[0;32m10.55MiB/s\x1b[0m\r"), "10.55MiB/s")
+
+    def test_stop_process_waits_then_kills_if_needed(self) -> None:
+        process = MagicMock()
+        process.poll.return_value = None
+        process.wait.side_effect = [TimeoutError(), 0]
+        with patch("engine.subprocess.TimeoutExpired", TimeoutError):
+            _stop_process(process, timeout=0.01)
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_count, 2)
+
+    def test_safe_remove_does_not_raise_when_windows_file_is_temporarily_locked(self) -> None:
+        path = MagicMock(spec=Path)
+        path.exists.return_value = True
+        path.unlink.side_effect = PermissionError(32, "locked")
+        with patch("engine.time.sleep"):
+            self.assertFalse(_remove_file_safely(path, attempts=2, delay=0))
+        self.assertEqual(path.unlink.call_count, 2)
 
     def test_busy_response_exposes_active_job_for_cancellation(self) -> None:
         job = host.JobState(job_id="job-existing", stage="merging", percent=42)
