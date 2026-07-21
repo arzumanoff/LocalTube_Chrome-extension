@@ -9,11 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+import engine  # noqa: E402
 from runtime_fixes import _remove_file_safely, apply  # noqa: E402
-
-apply()
-
-from engine import EngineError, _run_ffmpeg, inspect_media  # noqa: E402
 
 
 def main() -> int:
@@ -26,8 +23,10 @@ def main() -> int:
     target = Path(sys.argv[2]).resolve()
     os.environ["MEDIA_ENGINE_FFMPEG"] = str(Path(sys.argv[3]).resolve())
     os.environ["MEDIA_ENGINE_FFPROBE"] = str(Path(sys.argv[4]).resolve())
+    os.environ["MEDIA_ENGINE_VIDEO_ENCODER"] = "software"
+    apply()
 
-    source_info = inspect_media(source)
+    source_info = engine.inspect_media(source)
     cancel_event = threading.Event()
     process_holder: dict[str, object] = {}
     events: list[dict[str, object]] = []
@@ -49,7 +48,7 @@ def main() -> int:
     canceller = threading.Thread(target=cancel_like_host, daemon=True)
     canceller.start()
     try:
-        _run_ffmpeg(
+        engine._run_ffmpeg(
             source=source,
             target=target,
             duration=source_info["duration"],
@@ -59,7 +58,7 @@ def main() -> int:
             process_holder=process_holder,
             emit=events.append,
         )
-    except EngineError as exc:
+    except engine.EngineError as exc:
         if exc.code != "DOWNLOAD_CANCELLED":
             raise AssertionError(f"unexpected error: {exc.code}: {exc}") from exc
     else:
