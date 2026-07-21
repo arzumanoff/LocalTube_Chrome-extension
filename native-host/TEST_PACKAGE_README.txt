@@ -17,6 +17,13 @@
 
 %LOCALAPPDATA%\ArzumanoffMediaEngine\hardware-profile.json
 
+Подробный журнал проверки каждого backend сохраняется в:
+
+%LOCALAPPDATA%\ArzumanoffMediaEngine\logs\hardware-detection.log
+
+Журнал содержит список кодировщиков из FFmpeg, результат проверки
+NVENC/AMF/QSV, код возврата и текст ошибки FFmpeg.
+
 Поддерживаются:
 - NVIDIA NVENC;
 - AMD AMF;
@@ -38,6 +45,9 @@ engine\REDETECT_HARDWARE.cmd.
 8. Откройте обычное видео YouTube и нажмите «Скачать».
 9. Убедитесь, что показаны только реально доступные качества.
 10. При преобразовании 4K проверьте, что в статусе отображается выбранный кодировщик.
+
+Если вместо видеокарты выбран libx264, приложите файл:
+%LOCALAPPDATA%\ArzumanoffMediaEngine\logs\hardware-detection.log
 
 PR пока не мержить. После проверки можно удалить движок через
 engine\UNINSTALL_ENGINE.cmd.
