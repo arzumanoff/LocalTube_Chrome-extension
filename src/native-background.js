@@ -6,6 +6,7 @@ const {
   buildDownloadPayload,
   buildCancelPayload,
   normalizeProbeResponse,
+  shouldRetryNativeRequest,
 } = self.YTDCore;
 
 const REQUEST_TIMEOUTS = {
@@ -107,13 +108,33 @@ function getNativePort() {
   }
 }
 
-function sendNativeRequest(action, payload = {}, timeoutMs = REQUEST_TIMEOUTS[action] || 30000) {
+function sendNativeRequest(
+  action,
+  payload = {},
+  timeoutMs = REQUEST_TIMEOUTS[action] || 30000,
+  attempt = 0,
+) {
   return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (response) => {
+      if (settled) return;
+      settled = true;
+      if (shouldRetryNativeRequest(action, response, attempt)) {
+        nativePort = null;
+        setTimeout(() => {
+          sendNativeRequest(action, payload, timeoutMs, attempt + 1).then(resolve);
+        }, 100);
+        return;
+      }
+      resolve(response);
+    };
+
     let port;
     try {
       port = getNativePort();
     } catch (error) {
-      resolve(errorResponse('NATIVE_HOST_NOT_INSTALLED', error.message));
+      finish(errorResponse('NATIVE_HOST_NOT_INSTALLED', error.message));
       return;
     }
 
@@ -121,17 +142,17 @@ function sendNativeRequest(action, payload = {}, timeoutMs = REQUEST_TIMEOUTS[ac
     const timer = setTimeout(() => {
       if (!pending.has(requestId)) return;
       pending.delete(requestId);
-      resolve(errorResponse('NATIVE_REQUEST_TIMEOUT', `Локальный движок не ответил на запрос ${action}.`));
+      finish(errorResponse('NATIVE_REQUEST_TIMEOUT', `Локальный движок не ответил на запрос ${action}.`));
     }, timeoutMs);
 
-    pending.set(requestId, { resolve, timer, action });
+    pending.set(requestId, { resolve: finish, timer, action });
     try {
       port.postMessage({ requestId, action, ...payload });
     } catch (error) {
       clearTimeout(timer);
       pending.delete(requestId);
-      nativePort = null;
-      resolve(errorResponse('NATIVE_SEND_FAILED', error.message));
+      if (nativePort === port) nativePort = null;
+      finish(errorResponse('NATIVE_SEND_FAILED', error.message));
     }
   });
 }
