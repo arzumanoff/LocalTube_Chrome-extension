@@ -66,9 +66,18 @@ jobs:
           if (-not $DenoExe) { throw 'Deno archive does not contain deno.exe.' }
           Copy-Item $DenoExe.FullName (Join-Path $Tools 'deno.exe') -Force
 
-          & (Join-Path $Tools 'ffmpeg.exe') -version | Select-Object -First 1
+          $Ffmpeg = Join-Path $Tools 'ffmpeg.exe'
+          & $Ffmpeg -version | Select-Object -First 1
           & (Join-Path $Tools 'ffprobe.exe') -version | Select-Object -First 1
           & (Join-Path $Tools 'deno.exe') --version | Select-Object -First 1
+
+          $EncoderList = (& $Ffmpeg -hide_banner -encoders 2>&1 | Out-String)
+          foreach ($Encoder in @('h264_amf', 'h264_nvenc', 'h264_qsv', 'libx264')) {
+            if ($EncoderList -notmatch "\b$Encoder\b") {
+              throw "Bundled FFmpeg is missing required encoder: $Encoder"
+            }
+            Write-Host "Encoder available: $Encoder"
+          }
 
       - name: Smoke real FFmpeg remux pipeline
         shell: powershell
