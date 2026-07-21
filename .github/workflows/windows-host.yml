@@ -13,6 +13,7 @@ jobs:
     runs-on: windows-latest
     env:
       MEDIA_ENGINE_STDOUT_DIAGNOSTIC: '1'
+      MEDIA_ENGINE_VIDEO_ENCODER: 'software'
     steps:
       - uses: actions/checkout@v4
 
@@ -136,8 +137,10 @@ jobs:
           Copy-Item 'native-host\tools\deno.exe' (Join-Path $EngineDir 'tools\deno.exe') -Force
           Copy-Item 'native-host\install_host.ps1' $EngineDir -Force
           Copy-Item 'native-host\uninstall_host.ps1' $EngineDir -Force
+          Copy-Item 'native-host\redetect_hardware.ps1' $EngineDir -Force
           Copy-Item 'native-host\INSTALL_ENGINE.cmd' $EngineDir -Force
           Copy-Item 'native-host\UNINSTALL_ENGINE.cmd' $EngineDir -Force
+          Copy-Item 'native-host\REDETECT_HARDWARE.cmd' $EngineDir -Force
           Copy-Item 'native-host\TEST_PACKAGE_README.txt' (Join-Path $PackageRoot 'README.txt') -Force
 
           node scripts/package-extension.mjs $ExtensionDir
@@ -158,7 +161,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Install staged package
+      - name: Install staged package and detect hardware
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -170,11 +173,38 @@ jobs:
             Pop-Location
           }
 
+      - name: Verify persisted hardware profile
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $InstallDir = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine'
+          $ProfilePath = Join-Path $InstallDir 'hardware-profile.json'
+          $FfmpegPath = Join-Path $InstallDir 'ffmpeg.exe'
+          if (-not (Test-Path $ProfilePath)) { throw 'hardware-profile.json was not created.' }
+          $Profile = Get-Content $ProfilePath -Raw | ConvertFrom-Json
+          if ($Profile.schemaVersion -ne 1) { throw 'Unexpected hardware profile schema.' }
+          if ($Profile.encoderKey -ne 'software-x264') { throw "Unexpected CI encoder: $($Profile.encoderKey)" }
+          if ($Profile.status -ne 'verified') { throw 'Hardware profile is not verified.' }
+          $Hash = (Get-FileHash $FfmpegPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($Profile.ffmpegFingerprint -ne "sha256:$Hash") { throw 'FFmpeg fingerprint mismatch.' }
+
       - name: Smoke installed Native Host
         shell: powershell
         run: |
           $InstalledHost = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\media-engine-host.exe'
           python "$env:GITHUB_WORKSPACE\native-host\tests\smoke_built_host.py" $InstalledHost
+
+      - name: Smoke maintenance hardware re-detection
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Script = Join-Path $PWD 'native-host\release\media-engine-test-package\engine\redetect_hardware.ps1'
+          & $Script
+          $ProfilePath = Join-Path $env:LOCALAPPDATA 'ArzumanoffMediaEngine\hardware-profile.json'
+          $Profile = Get-Content $ProfilePath -Raw | ConvertFrom-Json
+          if ($Profile.encoderKey -ne 'software-x264' -or $Profile.status -ne 'verified') {
+            throw 'Maintenance re-detection did not replace a verified software profile.'
+          }
 
       - name: Verify installed files and registry
         shell: powershell
@@ -182,7 +212,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $RegistryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.arzumanoff.media_engine'
           if (-not (Test-Path $RegistryPath)) { throw 'Native Messaging registry key was not created.' }
-          foreach ($Name in @('media-engine-host.exe', 'ffmpeg.exe', 'ffprobe.exe', 'deno.exe', 'native-host.json')) {
+          foreach ($Name in @('media-engine-host.exe', 'ffmpeg.exe', 'ffprobe.exe', 'deno.exe', 'native-host.json', 'hardware-profile.json')) {
             $Installed = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine\$Name"
             if (-not (Test-Path $Installed)) { throw "Installed component missing: $Installed" }
           }
