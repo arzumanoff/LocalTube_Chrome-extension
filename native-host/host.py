@@ -83,8 +83,10 @@ def emit_job(job: JobState, payload: dict[str, Any]) -> None:
 
 
 def sanitize_suggested_filename(value: Any) -> str:
-    name = Path(str(value or "video.mp4")).name
-    name = INVALID_WINDOWS_CHARS.sub("_", name).strip().rstrip(". ")
+    name = str(value or "video.mp4")
+    name = INVALID_WINDOWS_CHARS.sub("_", name)
+    name = os.path.basename(name)
+    name = name.strip().rstrip(". ")
     stem = Path(name).stem.strip().rstrip(". ") or "video"
     suffix = Path(name).suffix.lower()
     if stem.upper() in RESERVED_WINDOWS_NAMES:
