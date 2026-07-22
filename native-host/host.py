@@ -14,7 +14,7 @@ from typing import Any
 from engine import EngineError, is_supported_url, probe_video, run_download
 from protocol import MessageWriter, ProtocolError, read_message, reserve_native_stdout
 
-HOST_VERSION = "0.1.2"
+HOST_VERSION = "0.1.3"
 INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 URL_IN_LOG = re.compile(r"https?://\S+", re.IGNORECASE)
 RESERVED_WINDOWS_NAMES = {
@@ -83,10 +83,9 @@ def emit_job(job: JobState, payload: dict[str, Any]) -> None:
 
 
 def sanitize_suggested_filename(value: Any) -> str:
-    name = str(value or "video.mp4")
-    name = INVALID_WINDOWS_CHARS.sub("_", name)
-    name = os.path.basename(name)
-    name = name.strip().rstrip(". ")
+    raw_name = str(value or "video.mp4").replace("\\", "/")
+    name = raw_name.rsplit("/", 1)[-1]
+    name = INVALID_WINDOWS_CHARS.sub("_", name).strip().rstrip(". ")
     stem = Path(name).stem.strip().rstrip(". ") or "video"
     suffix = Path(name).suffix.lower()
     if stem.upper() in RESERVED_WINDOWS_NAMES:

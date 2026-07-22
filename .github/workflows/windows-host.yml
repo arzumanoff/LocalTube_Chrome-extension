@@ -27,6 +27,13 @@ jobs:
           cache: pip
           cache-dependency-path: native-host/requirements.txt
 
+      - name: Test and lint on Windows
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npm test
+          npm run test:host
+          npm run check
+
       - name: Build Native Host
         shell: powershell
         run: ./native-host/build_host.ps1

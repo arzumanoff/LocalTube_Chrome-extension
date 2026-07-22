@@ -162,8 +162,16 @@ class EngineTests(unittest.TestCase):
 
     def test_filename_sanitization(self) -> None:
         self.assertEqual(sanitize_suggested_filename('A:B?C.mp4'), 'A_B_C.mp4')
-        self.assertEqual(sanitize_suggested_filename('CON.mp4'), '_CON.mp4')
         self.assertEqual(sanitize_suggested_filename('../video.webm'), 'video.mp4')
+        self.assertEqual(sanitize_suggested_filename('..\\video.webm'), 'video.mp4')
+        self.assertEqual(sanitize_suggested_filename('C:\\folder\\video.webm'), 'video.mp4')
+        self.assertEqual(sanitize_suggested_filename('C:\\folder\\CON.mp4'), '_CON.mp4')
+        self.assertEqual(sanitize_suggested_filename('C:\\folder\\NUL.txt'), '_NUL.mp4')
+        self.assertEqual(sanitize_suggested_filename('..\\..\\AUX'), '_AUX.mp4')
+        self.assertEqual(sanitize_suggested_filename('folder/subfolder/trailing.'), 'trailing.mp4')
+        self.assertEqual(sanitize_suggested_filename('русский_имя_с_пробелом.mp4'), 'русский_имя_с_пробелом.mp4')
+        self.assertEqual(sanitize_suggested_filename(''), 'video.mp4')
+        self.assertEqual(sanitize_suggested_filename(None), 'video.mp4')
 
 
 class ProtocolTests(unittest.TestCase):
