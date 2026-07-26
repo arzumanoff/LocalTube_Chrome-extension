@@ -1,4 +1,4 @@
-# Бриф для сайта Media Downloader
+# Бриф для сайта LocalTube
 
 > Документ для Kimi — содержит все факты, необходимые для создания лендинга и страницы загрузки.
 
@@ -6,7 +6,7 @@
 
 ## 1. Продукт
 
-**Media Downloader** — бесплатное Chrome-расширение с открытым исходным кодом для скачивания видео с YouTube в MP4 (H.264/AAC).
+**LocalTube** — бесплатное Chrome-расширение с открытым исходным кодом для скачивания видео с YouTube в MP4 (H.264/AAC).
 
 Не требует регистрации, не отправляет данные на сторонние серверы, не содержит рекламы.
 
@@ -71,7 +71,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 - YouTube Shorts
 - Сайт
 
-**Автосборка инсталлятора:** при каждом теге `v*` GitHub Actions собирает `MediaDownloader-Setup.exe` и выкладывает в [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
+**Автосборка инсталлятора:** при каждом теге `v*` GitHub Actions собирает `LocalTube-Setup.exe` и выкладывает в [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
 
 ---
 
@@ -80,7 +80,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 Сайт должен быть **одностраничным лендингом** со следующими секциями:
 
 ### 7.1 Hero-секция
-- Название: **Media Downloader**
+- Название: **LocalTube**
 - Подзаголовок: «Скачивайте YouTube-видео в настоящем качестве. Без рекламы, без регистрации, без сторонних серверов.»
 - Кнопка: **Скачать** (ссылка на последний GitHub Release: `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`) + **GitHub** (ссылка на репозиторий)
 
@@ -121,12 +121,12 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 
 ### Способ 1: Инсталлятор (рекомендуемый)
 
-1. Скачайте `MediaDownloader-Setup-*.exe` с [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest)
+1. Скачайте `LocalTube-Setup-*.exe` с [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest)
 2. Запустите установщик — он:
    - Установит локальный движок (yt-dlp + FFmpeg + Deno)
    - Автоматически определит ваш видеоэнкодер (NVIDIA/AMD/Intel)
    - Зарегистрирует Native Messaging host
-   - Скопирует расширение в `%LOCALAPPDATA%\MediaDownloader\extension\`
+   - Скопирует расширение в `%LOCALAPPDATA%\LocalTube\extension\`
 3. После установки откроется `chrome://extensions`
 4. Включите «Режим разработчика» → «Загрузить распакованное расширение» → выберите папку расширения
 5. Откройте YouTube, нажмите Ctrl+F5
@@ -180,7 +180,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 Сайт не хранит файлы сам — все ссылки ведут на GitHub Releases.
 
 1. **Кнопка «Скачать»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`
-   - Автоматически отдаёт последний `MediaDownloader-Setup-*.exe`
+   - Автоматически отдаёт последний `LocalTube-Setup-*.exe`
 2. **Кнопка «GitHub»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension`
 3. **Версия и changelog** — можно тянуть через GitHub API:
    - `GET https://api.github.com/repos/arzumanoff/youtube-downloader-chrome-extension/releases/latest`

@@ -354,7 +354,7 @@ def run_download(
         final_path = final_path.with_suffix(".mp4")
     final_path.parent.mkdir(parents=True, exist_ok=True)
 
-    temp_root = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "ArzumanoffMediaEngine" / "temp"
+    temp_root = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LocalTubeEngine" / "temp"
     temp_root.mkdir(parents=True, exist_ok=True)
     work_dir = Path(tempfile.mkdtemp(prefix=f"{job_id}-", dir=temp_root))
     partial_final = final_path.with_name(f".{final_path.stem}.{job_id}.partial.mp4")

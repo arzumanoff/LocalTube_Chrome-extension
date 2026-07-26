@@ -1,10 +1,10 @@
 ═══════════════════════════════════════════════════════════
-  Media Downloader успешно установлен!
+  LocalTube успешно установлен!
 ═══════════════════════════════════════════════════════════
 
 Что установлено:
-  • Локальный движок: %LOCALAPPDATA%\ArzumanoffMediaEngine\
-  • Расширение Chrome: %LOCALAPPDATA%\MediaDownloader\extension\
+  • Локальный движок: %LOCALAPPDATA%\LocalTubeEngine\
+  • Расширение Chrome: %LOCALAPPDATA%\LocalTube\extension\
   • Видеоэнкодер: определён автоматически
 
 ЧТО ДЕЛАТЬ ДАЛЬШЕ:
@@ -17,7 +17,7 @@
 3. Нажмите «Загрузить распакованное расширение»
 
 4. Выберите папку:
-   %LOCALAPPDATA%\MediaDownloader\extension
+   %LOCALAPPDATA%\LocalTube\extension
 
 5. Откройте YouTube, нажмите Ctrl+F5
 

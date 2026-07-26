@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Windows + Chrome only for this MVP.
-- Profile path: `%LOCALAPPDATA%\ArzumanoffMediaEngine\hardware-profile.json`.
+- Profile path: `%LOCALAPPDATA%\LocalTubeEngine\hardware-profile.json`.
 - Supported keys: `nvidia-nvenc`, `amd-amf`, `intel-qsv`, `software-x264`.
 - Priority: NVIDIA NVENC → AMD AMF → Intel Quick Sync → libx264.
 - Normal downloads must not probe hardware when a verified profile with the current FFmpeg fingerprint exists.

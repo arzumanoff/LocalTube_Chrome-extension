@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$InstallDir = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine"
+$InstallDir = Join-Path $env:LOCALAPPDATA "LocalTubeEngine"
 $HostExe = Join-Path $InstallDir "media-engine-host.exe"
 $ProfilePath = Join-Path $InstallDir "hardware-profile.json"
 $LogPath = Join-Path $InstallDir "logs\hardware-detection.log"

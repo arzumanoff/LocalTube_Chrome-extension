@@ -1,11 +1,11 @@
-; ── Media Downloader — Inno Setup installer ────────────────────────
+; ── LocalTube — Inno Setup installer ────────────────────────
 ; Compiled in CI: ISCC /DAppVersion=X.Y.Z /DSourcePath="C:\repo" /O"out" setup.iss
 
-#define AppName     "Media Downloader"
+#define AppName     "LocalTube"
 #define AppPublisher "Arzumanoff"
 #define AppURL       "https://github.com/arzumanoff/youtube-downloader-chrome-extension"
-#define EngineDir   "{localappdata}\ArzumanoffMediaEngine"
-#define ExtDir      "{localappdata}\MediaDownloader\extension"
+#define EngineDir   "{localappdata}\LocalTubeEngine"
+#define ExtDir      "{localappdata}\LocalTube\extension"
 #define HostName    "com.arzumanoff.media_engine"
 #define ExtId       "cahgieplmdniiggmdiledlbjdbclbhjd"
 
@@ -17,7 +17,7 @@ AppPublisherURL={#AppURL}
 DefaultDirName={#EngineDir}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-OutputBaseFilename=MediaDownloader-Setup-{#AppVersion}
+OutputBaseFilename=LocalTube-Setup-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

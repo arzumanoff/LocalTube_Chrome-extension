@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 $HostName = "com.arzumanoff.media_engine"
-$InstallDir = Join-Path $env:LOCALAPPDATA "ArzumanoffMediaEngine"
+$InstallDir = Join-Path $env:LOCALAPPDATA "LocalTubeEngine"
 $RegistryPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
 
 if (Test-Path $RegistryPath) {

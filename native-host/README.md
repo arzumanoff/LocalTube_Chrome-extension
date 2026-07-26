@@ -43,7 +43,7 @@ Install the host for the current Windows user:
 The script writes:
 
 ```text
-%LOCALAPPDATA%\ArzumanoffMediaEngine\
+%LOCALAPPDATA%\LocalTubeEngine\
 ```
 
 and registers:

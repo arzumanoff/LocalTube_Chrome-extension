@@ -82,7 +82,7 @@ Example installer result:
 Path:
 
 ```text
-%LOCALAPPDATA%\ArzumanoffMediaEngine\hardware-profile.json
+%LOCALAPPDATA%\LocalTubeEngine\hardware-profile.json
 ```
 
 Schema version 1:

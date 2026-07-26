@@ -15,11 +15,11 @@
 Во время установки движок один раз проверяет доступные аппаратные
 кодировщики и сохраняет результат в:
 
-%LOCALAPPDATA%\ArzumanoffMediaEngine\hardware-profile.json
+%LOCALAPPDATA%\LocalTubeEngine\hardware-profile.json
 
 Подробный журнал проверки каждого backend сохраняется в:
 
-%LOCALAPPDATA%\ArzumanoffMediaEngine\logs\hardware-detection.log
+%LOCALAPPDATA%\LocalTubeEngine\logs\hardware-detection.log
 
 Журнал содержит список кодировщиков из FFmpeg, результат проверки
 NVENC/AMF/QSV, код возврата и текст ошибки FFmpeg.
@@ -51,7 +51,7 @@ Messaging-порт. Команда начала скачивания автом�
 10. При преобразовании 4K проверьте, что в статусе отображается выбранный кодировщик.
 
 Если вместо видеокарты выбран libx264, приложите файл:
-%LOCALAPPDATA%\ArzumanoffMediaEngine\logs\hardware-detection.log
+%LOCALAPPDATA%\LocalTubeEngine\logs\hardware-detection.log
 
 PR пока не мержить. После проверки можно удалить движок через
 engine\UNINSTALL_ENGINE.cmd.

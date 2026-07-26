@@ -43,7 +43,7 @@ log_lock = threading.Lock()
 
 def host_log_path() -> Path:
     base = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or Path.home())
-    return base / "ArzumanoffMediaEngine" / "logs" / "host.log"
+    return base / "LocalTubeEngine" / "logs" / "host.log"
 
 
 def log(message: str) -> None:

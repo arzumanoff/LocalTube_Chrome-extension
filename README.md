@@ -1,4 +1,4 @@
-# Media Downloader — Chrome extension
+# LocalTube — Chrome extension
 
 > Русская версия: [README.ru.md](README.ru.md)
 

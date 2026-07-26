@@ -126,7 +126,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: MediaDownloader-Setup-${{ env.EXT_VERSION }}
+          name: LocalTube-Setup-${{ env.EXT_VERSION }}
           path: release/installer/*.exe
           if-no-files-found: error
           retention-days: 30
@@ -135,9 +135,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Media Downloader v${{ env.EXT_VERSION }}"
+          name: "LocalTube v${{ env.EXT_VERSION }}"
           body: |
-            ## Media Downloader v${{ env.EXT_VERSION }}
+            ## LocalTube v${{ env.EXT_VERSION }}
 
             Chrome-расширение с Native Messaging движком для скачивания YouTube-видео в реальном качестве.
 
@@ -145,7 +145,7 @@ jobs:
             См. [CHANGELOG](https://github.com/arzumanoff/youtube-downloader-chrome-extension/commits/main)
 
             ### Установка
-            1. Скачайте и запустите `MediaDownloader-Setup.exe`
+            1. Скачайте и запустите `LocalTube-Setup.exe`
             2. Установщик настроит движок и определит ваш видеоэнкодер
             3. Загрузите расширение: `chrome://extensions` → Режим разработчика → Загрузить распакованное → папка `расширение`
             4. Откройте YouTube, нажмите Ctrl+F5

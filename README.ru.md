@@ -1,4 +1,4 @@
-# Media Downloader — расширение Chrome
+# LocalTube — расширение Chrome
 
 > English version: [README.md](README.md)
 
@@ -39,13 +39,13 @@ Shorts, плейлисты, живые трансляции, сайт и дру�
 
 ### Способ 1: Инсталлятор (рекомендуемый)
 
-Скачайте `MediaDownloader-Setup-*.exe` со страницы [Релизов](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest).
+Скачайте `LocalTube-Setup-*.exe` со страницы [Релизов](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest).
 
 Установщик сам:
 - Установит движок (yt-dlp + FFmpeg + Deno);
 - Определит ваш видеоэнкодер (NVIDIA NVENC / AMD AMF / Intel QSV);
 - Зарегистрирует Native Messaging host;
-- Скопирует расширение в `%LOCALAPPDATA%\MediaDownloader\extension\`.
+- Скопирует расширение в `%LOCALAPPDATA%\LocalTube\extension\`.
 
 После установки откроется `chrome://extensions` — включите **Режим разработчика** и загрузите папку расширения.
 
@@ -110,7 +110,7 @@ npm run smoke:manual
 
 ## Автосборка инсталлятора
 
-При пуше тега `v*` (например, `v0.2.8`) GitHub Actions собирает `MediaDownloader-Setup.exe` и создаёт [GitHub Release](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
+При пуше тега `v*` (например, `v0.2.8`) GitHub Actions собирает `LocalTube-Setup.exe` и создаёт [GitHub Release](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
 
 Подробнее: [`.github/workflows/release-installer.yml`](.github/workflows/release-installer.yml) и [`scripts/setup.iss`](scripts/setup.iss).
 
