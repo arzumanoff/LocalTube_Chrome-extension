@@ -48,6 +48,10 @@ def _ffmpeg_path(directory: Path) -> Path:
     return Path("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
 
 
+def is_chrome_native_messaging_arg(arg: str) -> bool:
+    return arg.startswith("chrome-extension://") or arg.startswith("--parent-window=")
+
+
 def run_maintenance_command(args: Sequence[str], directory: Path) -> int | None:
     if list(args) != ["--detect-hardware"]:
         return None
@@ -68,11 +72,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     directory = configure_runtime_path()
 
-    maintenance_result = run_maintenance_command(args, directory)
+    cli_args = [arg for arg in args if not is_chrome_native_messaging_arg(arg)]
+
+    maintenance_result = run_maintenance_command(cli_args, directory)
     if maintenance_result is not None:
         return maintenance_result
-    if args:
-        print(f"Unknown command: {' '.join(args)}", file=sys.stderr)
+    if cli_args:
+        print(f"Unknown command: {' '.join(cli_args)}", file=sys.stderr)
         return 2
 
     configure_native_stdio()

@@ -361,22 +361,29 @@ def run_download(
 
     def progress_hook(data: dict[str, Any]) -> None:
         if cancel_event.is_set():
-            raise yt_dlp.utils.DownloadError("cancelled")
+            raise getattr(yt_dlp.utils, "DownloadCancelled", yt_dlp.utils.DownloadError)("cancelled")
         if data.get("status") != "downloading":
             return
         downloaded = float(data.get("downloaded_bytes") or 0)
         total = float(data.get("total_bytes") or data.get("total_bytes_estimate") or 0)
         percent = downloaded / total * 100 if total > 0 else 0
+        eta_raw = data.get("eta")
+        try:
+            eta = max(0, round(float(eta_raw))) if eta_raw is not None else None
+        except (TypeError, ValueError):
+            eta = None
         emit({
             "event": "progress",
             "jobId": job_id,
             "stage": "downloading",
             "percent": max(0.0, min(99.0, percent)),
             "speed": data.get("_speed_str") or "",
-            "eta": data.get("eta"),
+            "eta": eta,
         })
 
     def postprocessor_hook(data: dict[str, Any]) -> None:
+        if cancel_event.is_set():
+            raise getattr(yt_dlp.utils, "DownloadCancelled", yt_dlp.utils.DownloadError)("cancelled")
         processor = str(data.get("postprocessor") or "").lower()
         if "merger" in processor and str(data.get("status") or "") in {"started", "processing"}:
             emit({"event": "progress", "jobId": job_id, "stage": "merging", "percent": 0})

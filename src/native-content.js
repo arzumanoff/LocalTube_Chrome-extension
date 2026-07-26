@@ -177,7 +177,13 @@
     shadow.querySelector('.state').textContent = stageLabels[stage] || payload?.message || 'Выполняется…';
     shadow.querySelector('.percent').textContent = percent === null ? '' : `${Math.round(percent)}%`;
     shadow.querySelector('.bar i').style.width = percent === null ? '0%' : `${percent}%`;
-    shadow.querySelector('.details').textContent = [payload?.speed, payload?.eta ? `Осталось: ${payload.eta} с` : ''].filter(Boolean).join(' · ');
+
+    const etaSeconds = payload?.eta !== null && payload?.eta !== undefined && Number.isFinite(Number(payload.eta))
+      ? Math.max(0, Math.round(Number(payload.eta)))
+      : null;
+    shadow.querySelector('.details').textContent = terminal
+      ? ''
+      : [payload?.speed, etaSeconds !== null ? `Осталось: ${etaSeconds} с` : ''].filter(Boolean).join(' · ');
     shadow.querySelector('.error').textContent = stage === 'failed' ? (payload.message || 'Не удалось скачать видео.') : '';
 
     const actions = shadow.querySelector('.actions');

@@ -79,6 +79,15 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result, 2)
         native_stdio.assert_not_called()
 
+    def test_chrome_extension_arg_enters_native_mode(self) -> None:
+        with patch.object(bootstrap, "configure_native_stdio") as native_stdio, patch(
+            "host.main", return_value=0
+        ) as host_main, patch("runtime_fixes.apply"):
+            result = bootstrap.main(["chrome-extension://cahgieplmdniiggmdiledlbjdbclbhjd/"])
+        self.assertEqual(result, 0)
+        native_stdio.assert_called_once()
+        host_main.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
