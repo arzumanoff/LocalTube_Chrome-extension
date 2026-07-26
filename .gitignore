@@ -8,3 +8,9 @@ Thumbs.db
 downloads/
 .tmp/
 .temp/
+native-host/.venv/
+native-host/build/
+native-host/dist/
+native-host/tools/*.exe
+native-host/__pycache__/
+native-host/tests/__pycache__/

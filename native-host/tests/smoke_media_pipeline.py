@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import engine  # noqa: E402
+import hardware_profile  # noqa: E402
+from runtime_fixes import apply  # noqa: E402
+
+
+def assert_output(path: Path) -> dict[str, object]:
+    result = engine.inspect_media(path)
+    if result["videoCodec"] != "h264" or result["audioCodec"] != "aac":
+        raise AssertionError(f"unexpected codecs: {result}")
+    if result["height"] != 360:
+        raise AssertionError(f"unexpected height: {result}")
+    return result
+
+
+def main() -> int:
+    if len(sys.argv) != 5:
+        raise SystemExit(
+            "usage: smoke_media_pipeline.py <source.mkv> <target.mp4> <ffmpeg> <ffprobe>"
+        )
+
+    source = Path(sys.argv[1]).resolve()
+    remux_target = Path(sys.argv[2]).resolve()
+    transcode_target = remux_target.with_name("transcoded.mp4")
+    ffmpeg = Path(sys.argv[3]).resolve()
+    os.environ["MEDIA_ENGINE_FFMPEG"] = str(ffmpeg)
+    os.environ["MEDIA_ENGINE_FFPROBE"] = str(Path(sys.argv[4]).resolve())
+    os.environ["MEDIA_ENGINE_VIDEO_ENCODER"] = "software"
+    apply()
+
+    profile_file = hardware_profile.profile_path(ffmpeg)
+    hardware_profile.detect_and_store(ffmpeg, profile_file)
+    original_detect = hardware_profile.detect_and_store
+
+    def unexpected_detection(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("runtime repeated hardware detection despite a verified profile")
+
+    hardware_profile.detect_and_store = unexpected_detection  # type: ignore[assignment]
+    try:
+        source_info = engine.inspect_media(source)
+
+        remux_events: list[dict[str, object]] = []
+        engine._run_ffmpeg(
+            source=source,
+            target=remux_target,
+            duration=source_info["duration"],
+            copy_streams=True,
+            job_id="smoke-remux",
+            cancel_event=threading.Event(),
+            process_holder={},
+            emit=remux_events.append,
+        )
+        assert_output(remux_target)
+        if not remux_events or remux_events[0].get("stage") != "merging":
+            raise AssertionError(f"missing merging progress: {remux_events}")
+
+        transcode_events: list[dict[str, object]] = []
+        engine._run_ffmpeg(
+            source=source,
+            target=transcode_target,
+            duration=source_info["duration"],
+            copy_streams=False,
+            job_id="smoke-transcode",
+            cancel_event=threading.Event(),
+            process_holder={},
+            emit=transcode_events.append,
+        )
+        assert_output(transcode_target)
+        converting = [event for event in transcode_events if event.get("stage") == "converting"]
+        if not converting:
+            raise AssertionError(f"missing converting progress: {transcode_events}")
+        if converting[-1].get("encoder") != "software-x264":
+            raise AssertionError(f"unexpected CI encoder: {transcode_events}")
+    finally:
+        hardware_profile.detect_and_store = original_detect
+
+    print("media pipeline smoke passed; persisted encoder=software-x264")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
