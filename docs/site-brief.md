@@ -69,8 +69,9 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 **Что в разработке:**
 - Плейлисты
 - YouTube Shorts
-- Однокликовый публичный инсталлятор
 - Сайт
+
+**Автосборка инсталлятора:** при каждом теге `v*` GitHub Actions собирает `MediaDownloader-Setup.exe` и выкладывает в [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
 
 ---
 
@@ -81,7 +82,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 ### 7.1 Hero-секция
 - Название: **Media Downloader**
 - Подзаголовок: «Скачивайте YouTube-видео в настоящем качестве. Без рекламы, без регистрации, без сторонних серверов.»
-- Кнопка: **Установить** (ведёт к секции установки) + **GitHub** (ссылка на репозиторий)
+- Кнопка: **Скачать** (ссылка на последний GitHub Release: `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`) + **GitHub** (ссылка на репозиторий)
 
 ### 7.2 Как это работает
 Три шага с иконками:
@@ -118,43 +119,41 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 
 ## 8. Инструкция по установке (для сайта)
 
-Сейчас это dev-установка — публичного инсталлятора ещё нет.
+### Способ 1: Инсталлятор (рекомендуемый)
 
-### Что нужно
+1. Скачайте `MediaDownloader-Setup-*.exe` с [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest)
+2. Запустите установщик — он:
+   - Установит локальный движок (yt-dlp + FFmpeg + Deno)
+   - Автоматически определит ваш видеоэнкодер (NVIDIA/AMD/Intel)
+   - Зарегистрирует Native Messaging host
+   - Скопирует расширение в `%LOCALAPPDATA%\MediaDownloader\extension\`
+3. После установки откроется `chrome://extensions`
+4. Включите «Режим разработчика» → «Загрузить распакованное расширение» → выберите папку расширения
+5. Откройте YouTube, нажмите Ctrl+F5
 
-Перед установкой убедитесь, что у вас есть:
+### Способ 2: Ручная установка (для разработчиков)
 
-| Инструмент | Где взять |
-|-----------|----------|
-| **Python 3.12+** | `python.org/downloads` |
-| **FFmpeg + FFprobe** | `gyan.dev` (релизы для Windows) |
-| **Deno** | `deno.com` (нужен для yt-dlp) |
-| **yt-dlp** | `github.com/yt-dlp/yt-dlp` |
+Требуется: Python 3.12+, Git, Node.js 20+
 
-### Шаги установки
+```bash
+git clone https://github.com/arzumanoff/youtube-downloader-chrome-extension.git
+cd youtube-downloader-chrome-extension
+```
 
-1. **Скачайте репозиторий** с GitHub (Code → Download ZIP)
-2. **Соберите движок** — откройте PowerShell в папке `native-host`:
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\build_host.ps1
-   ```
-3. **Положите инструменты** — скопируйте `ffmpeg.exe`, `ffprobe.exe` и `deno.exe` в папку `native-host/tools/`
-4. **Установите движок**:
-   ```powershell
-   .\install_host.ps1
-   ```
-5. **Загрузите расширение** в Chrome:
-   - Откройте `chrome://extensions`
-   - Включите «Режим разработчика»
-   - Нажмите «Загрузить распакованное расширение»
-   - Выберите корневую папку проекта (где лежит `manifest.json`)
-6. **Обновите вкладку YouTube** (Ctrl+F5) — кнопка «Скачать» появится под плеером
+Положите `ffmpeg.exe`, `ffprobe.exe` и `deno.exe` в `native-host/tools/`, затем:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\native-host\build_host.ps1
+.\native-host\install_host.ps1
+```
+
+Загрузите корневую папку как распакованное расширение в Chrome.
 
 ### Удаление
-```powershell
-.\uninstall_host.ps1
-```
+
+- **Инсталлятор:** через «Установка и удаление программ» Windows
+- **Ручная:** `.\native-host\uninstall_host.ps1`
 
 ---
 
@@ -177,11 +176,29 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 
 ## 11. Файлы для размещения на сайте
 
-На сайте должны быть доступны для скачивания:
+Сайт не хранит файлы сам — все ссылки ведут на GitHub Releases.
 
-1. **ZIP-архив с расширением** (корень репозитория) — для ручной установки
-2. **Ссылка на GitHub** для клонирования: `git clone https://github.com/arzumanoff/youtube-downloader-chrome-extension.git`
-3. В будущем — **публичный инсталлятор** `.exe` (в один клик)
+1. **Кнопка «Скачать»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`
+   - Автоматически отдаёт последний `MediaDownloader-Setup-*.exe`
+2. **Кнопка «GitHub»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension`
+3. **Версия и changelog** — можно тянуть через GitHub API:
+   - `GET https://api.github.com/repos/arzumanoff/youtube-downloader-chrome-extension/releases/latest`
+
+### Как сайт узнаёт последнюю версию
+
+```javascript
+// Пример: получить ссылку на последний релиз
+fetch('https://api.github.com/repos/arzumanoff/youtube-downloader-chrome-extension/releases/latest')
+  .then(r => r.json())
+  .then(release => {
+    const version = release.tag_name;
+    const exeAsset = release.assets.find(a => a.name.endsWith('.exe'));
+    const downloadUrl = exeAsset.browser_download_url;
+    // Показать кнопку «Скачать v{version}»
+  });
+```
+
+Никакого хостинга файлов на сайте не требуется — GitHub делает всё.
 
 ---
 
