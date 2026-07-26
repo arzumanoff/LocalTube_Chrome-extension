@@ -1,6 +1,8 @@
 # Media Downloader — Chrome extension
 
-Development repository for a public-facing video download product. The final brand name is not selected yet.
+> Русская версия: [README.ru.md](README.ru.md)
+
+Development repository for a public-facing video download product.
 
 The current architecture is intentionally split into two parts:
 
