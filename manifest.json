@@ -6,6 +6,12 @@
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6IQu3Akenr4bFlvg/16CExUS5ssiTgXfuLI3iM8P0Nut/MKEZvuPkb2LI4Jo+TLGmE81h3ndOMd5dNnB1rQmLnm1J9+h3plSaY6uJjZzEwNPrQhse/9CT7dI1OYgHXpqnlG38SfJyNEnrHtGJpEPDLBUoacXGsW11TATqd55iVkPmgFhQtfzsRWIBRPNcyfuZfEOJ6ybTS0gu5ej3fT2RXlLReWLnw1mS6uyBEHORzPvJcIiyK8cVCA11nalV4/9FEQ/4zs0QGmMeK0BFkfCo3M+qde6FjANz7b+Q2tntiWuzbS252TyhEZ33WxwOfkfh6bg7fzWcRklfm0gOlduIQIDAQAB",
   "minimum_chrome_version": "120",
   "description": "Тестовая Native-версия: показывает реальные качества и сохраняет выбранное видео через локальный движок.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "nativeMessaging",
     "storage"
@@ -32,6 +38,12 @@
     }
   ],
   "action": {
-    "default_title": "Media Downloader — Native Test"
+    "default_title": "Media Downloader — Native Test",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }
