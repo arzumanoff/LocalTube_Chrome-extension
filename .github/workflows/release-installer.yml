@@ -59,8 +59,7 @@ jobs:
           New-Item -ItemType Directory -Path $Tools -Force | Out-Null
 
           $FfmpegZip = Join-Path $Downloads 'ffmpeg.zip'
-          & curl.exe -L --fail --retry 5 --retry-delay 2 --output $FfmpegZip `
-            'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          & curl.exe -L --fail --retry 5 --retry-delay 2 --output $FfmpegZip 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg download failed.' }
           $FfmpegExtract = Join-Path $Downloads 'ffmpeg'
           Expand-Archive -Path $FfmpegZip -DestinationPath $FfmpegExtract -Force
@@ -73,8 +72,7 @@ jobs:
           Copy-Item $FfprobeExe.FullName (Join-Path $Tools 'ffprobe.exe') -Force
 
           $DenoZip = Join-Path $Downloads 'deno.zip'
-          & curl.exe -L --fail --retry 5 --retry-delay 2 --output $DenoZip `
-            'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
+          & curl.exe -L --fail --retry 5 --retry-delay 2 --output $DenoZip 'https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip'
           if ($LASTEXITCODE -ne 0) { throw 'Deno download failed.' }
           $DenoExtract = Join-Path $Downloads 'deno'
           Expand-Archive -Path $DenoZip -DestinationPath $DenoExtract -Force
