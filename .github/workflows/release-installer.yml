@@ -35,7 +35,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $Installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
           & curl.exe -L --fail --retry 3 --output $Installer `
-            'https://files.jrsoftware.org/is/6/innosetup-6.4.1.exe'
+            'https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe'
           if ($LASTEXITCODE -ne 0) { throw 'Inno Setup download failed.' }
           Start-Process -FilePath $Installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/DIR=C:\innosetup' -Wait -NoNewWindow
           if (-not (Test-Path 'C:\innosetup\ISCC.exe')) { throw 'Inno Setup installation failed.' }
