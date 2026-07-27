@@ -30,17 +30,7 @@ jobs:
 
       # ── Install Inno Setup ──────────────────────────────────────────
       - name: Install Inno Setup
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $Installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
-          & curl.exe -L --fail --retry 3 --output $Installer `
-            'https://github.com/jrsoftware/issrc/releases/download/is-6_3_3/innosetup-6.3.3.exe'
-          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup download failed.' }
-          Start-Process -FilePath $Installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/DIR=C:\innosetup' -Wait -NoNewWindow
-          if (-not (Test-Path 'C:\innosetup\ISCC.exe')) { throw 'Inno Setup installation failed.' }
-          echo "ISCC_EXE=C:\innosetup\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & 'C:\innosetup\ISCC.exe' /? 2>&1 | Select-Object -First 3
+        uses: sandwich545/setup-inno@v1
 
       # ── Tests ────────────────────────────────────────────────────────
       - name: Test and lint
@@ -108,7 +98,7 @@ jobs:
           $Manifest = Get-Content manifest.json -Raw | ConvertFrom-Json
           $Version = $Manifest.version
           Write-Host "Extension version: $Version"
-          echo "EXT_VERSION=$Version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EXT_VERSION=$Version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       # ── Build installer with Inno Setup ───────────────────────────────
       - name: Compile installer
@@ -118,10 +108,10 @@ jobs:
           $InstallerDir = Join-Path $PWD 'release\installer'
           New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
 
-          & $env:ISCC_EXE `
-            /DAppVersion=$env:EXT_VERSION `
-            /DSourcePath="$PWD" `
-            /O"$InstallerDir" `
+          iscc `
+            "/DAppVersion=$env:EXT_VERSION" `
+            "/DSourcePath=$PWD" `
+            "/O$InstallerDir" `
             scripts\setup.iss
 
           if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
