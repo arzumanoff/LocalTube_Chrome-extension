@@ -80,9 +80,11 @@ jobs:
           if (-not $DenoExe) { throw 'Deno archive does not contain deno.exe.' }
           Copy-Item $DenoExe.FullName (Join-Path $Tools 'deno.exe') -Force
 
-          Write-Host "FFmpeg: $(& (Join-Path $Tools 'ffmpeg.exe') -version | Select-Object -First 1)"
-          Write-Host "FFprobe: $(& (Join-Path $Tools 'ffprobe.exe') -version | Select-Object -First 1)"
-          Write-Host "Deno: $(& (Join-Path $Tools 'deno.exe') --version | Select-Object -First 1)"
+          $Ffmpeg = Join-Path $Tools 'ffmpeg.exe'
+          & $Ffmpeg -version | Select-Object -First 1
+          & (Join-Path $Tools 'ffprobe.exe') -version | Select-Object -First 1
+          & (Join-Path $Tools 'deno.exe') --version | Select-Object -First 1
+          $LASTEXITCODE = 0
 
       # ── Package extension ────────────────────────────────────────────
       - name: Package Chrome extension
