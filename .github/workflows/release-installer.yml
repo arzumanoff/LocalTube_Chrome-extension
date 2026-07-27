@@ -32,10 +32,15 @@ jobs:
       - name: Install Inno Setup
         shell: powershell
         run: |
-          choco install innosetup --no-progress --yes
-          Write-Host "Inno Setup version:"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /? 2>&1 | Select-Object -First 3
-          echo "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ErrorActionPreference = 'Stop'
+          $Installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          & curl.exe -L --fail --retry 3 --output $Installer `
+            'https://files.jrsoftware.org/is/6/innosetup-6.4.1.exe'
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup download failed.' }
+          Start-Process -FilePath $Installer -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/DIR=C:\innosetup' -Wait -NoNewWindow
+          if (-not (Test-Path 'C:\innosetup\ISCC.exe')) { throw 'Inno Setup installation failed.' }
+          echo "ISCC_EXE=C:\innosetup\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & 'C:\innosetup\ISCC.exe' /? 2>&1 | Select-Object -First 3
 
       # ── Tests ────────────────────────────────────────────────────────
       - name: Test and lint
