@@ -60,7 +60,7 @@ jobs:
 
           $FfmpegZip = Join-Path $Downloads 'ffmpeg.zip'
           & curl.exe -L --fail --retry 5 --retry-delay 2 --output $FfmpegZip `
-            'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+            'https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip'
           if ($LASTEXITCODE -ne 0) { throw 'FFmpeg download failed.' }
           $FfmpegExtract = Join-Path $Downloads 'ffmpeg'
           Expand-Archive -Path $FfmpegZip -DestinationPath $FfmpegExtract -Force
