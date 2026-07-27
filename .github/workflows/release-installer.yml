@@ -30,7 +30,7 @@ jobs:
 
       # ── Install Inno Setup ──────────────────────────────────────────
       - name: Install Inno Setup
-        uses: sandwich545/setup-inno@v1
+        run: choco install innosetup --no-progress
 
       # ── Tests ────────────────────────────────────────────────────────
       - name: Test and lint
@@ -108,10 +108,18 @@ jobs:
           $InstallerDir = Join-Path $PWD 'release\installer'
           New-Item -ItemType Directory -Path $InstallerDir -Force | Out-Null
 
-          iscc `
-            "/DAppVersion=$env:EXT_VERSION" `
-            "/DSourcePath=$PWD" `
-            "/O$InstallerDir" `
+          $ISCC = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          if (-not $ISCC -or -not (Test-Path $ISCC)) {
+            $ISCC = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $ISCC)) {
+            throw "ISCC.exe not found at $ISCC"
+          }
+
+          & $ISCC `
+            /DAppVersion=$env:EXT_VERSION `
+            /DSourcePath="$PWD" `
+            /O"$InstallerDir" `
             scripts\setup.iss
 
           if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
