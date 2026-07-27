@@ -24,7 +24,7 @@
    Под плеером появится кнопка «Скачать».
 
 ═══════════════════════════════════════════════════════════
-  GitHub: https://github.com/arzumanoff/youtube-downloader-chrome-extension
+  GitHub: https://github.com/arzumanoff/LocalTube_Chrome-extension
 ═══════════════════════════════════════════════════════════
 
 Используйте расширение только для материалов,

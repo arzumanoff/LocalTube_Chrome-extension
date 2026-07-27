@@ -39,7 +39,7 @@ Shorts, плейлисты, живые трансляции, сайт и дру�
 
 ### Способ 1: Инсталлятор (рекомендуемый)
 
-Скачайте `LocalTube-Setup-*.exe` со страницы [Релизов](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest).
+Скачайте `LocalTube-Setup-*.exe` со страницы [Релизов](https://github.com/arzumanoff/LocalTube_Chrome-extension/releases/latest).
 
 Установщик сам:
 - Установит движок (yt-dlp + FFmpeg + Deno);
@@ -110,7 +110,7 @@ npm run smoke:manual
 
 ## Автосборка инсталлятора
 
-При пуше тега `v*` (например, `v0.2.8`) GitHub Actions собирает `LocalTube-Setup.exe` и создаёт [GitHub Release](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
+При пуше тега `v*` (например, `v0.2.8`) GitHub Actions собирает `LocalTube-Setup.exe` и создаёт [GitHub Release](https://github.com/arzumanoff/LocalTube_Chrome-extension/releases).
 
 Подробнее: [`.github/workflows/release-installer.yml`](.github/workflows/release-installer.yml) и [`scripts/setup.iss`](scripts/setup.iss).
 

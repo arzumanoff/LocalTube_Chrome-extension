@@ -71,7 +71,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 - YouTube Shorts
 - Сайт
 
-**Автосборка инсталлятора:** при каждом теге `v*` GitHub Actions собирает `LocalTube-Setup.exe` и выкладывает в [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases).
+**Автосборка инсталлятора:** при каждом теге `v*` GitHub Actions собирает `LocalTube-Setup.exe` и выкладывает в [GitHub Releases](https://github.com/arzumanoff/LocalTube_Chrome-extension/releases).
 
 ---
 
@@ -82,7 +82,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 ### 7.1 Hero-секция
 - Название: **LocalTube**
 - Подзаголовок: «Скачивайте YouTube-видео в настоящем качестве. Без рекламы, без регистрации, без сторонних серверов.»
-- Кнопка: **Скачать** (ссылка на последний GitHub Release: `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`) + **GitHub** (ссылка на репозиторий)
+- Кнопка: **Скачать** (ссылка на последний GitHub Release: `https://github.com/arzumanoff/LocalTube_Chrome-extension/releases/latest`) + **GitHub** (ссылка на репозиторий)
 
 ### 7.2 Как это работает
 Три шага с иконками:
@@ -111,7 +111,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 - 🔜 Поддержка других браузеров
 
 ### 7.6 Футер
-- Ссылка на GitHub: `https://github.com/arzumanoff/youtube-downloader-chrome-extension`
+- Ссылка на GitHub: `https://github.com/arzumanoff/LocalTube_Chrome-extension`
 - Лицензия (определить)
 - «Используйте только для материалов, которые вы вправе скачивать»
 
@@ -121,7 +121,7 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 
 ### Способ 1: Инсталлятор (рекомендуемый)
 
-1. Скачайте `LocalTube-Setup-*.exe` с [GitHub Releases](https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest)
+1. Скачайте `LocalTube-Setup-*.exe` с [GitHub Releases](https://github.com/arzumanoff/LocalTube_Chrome-extension/releases/latest)
 2. Запустите установщик — он:
    - Установит локальный движок (yt-dlp + FFmpeg + Deno)
    - Автоматически определит ваш видеоэнкодер (NVIDIA/AMD/Intel)
@@ -136,8 +136,8 @@ YouTube → Кнопка «Скачать» → Локальный движок 
 Требуется: Python 3.12+, Git, Node.js 20+
 
 ```bash
-git clone https://github.com/arzumanoff/youtube-downloader-chrome-extension.git
-cd youtube-downloader-chrome-extension
+git clone https://github.com/arzumanoff/LocalTube_Chrome-extension.git
+cd LocalTube_Chrome-extension
 ```
 
 Положите `ffmpeg.exe`, `ffprobe.exe` и `deno.exe` в `native-host/tools/`, затем:
@@ -159,8 +159,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 9. Ссылки
 
-- **GitHub:** `https://github.com/arzumanoff/youtube-downloader-chrome-extension`
-- **Issues:** `https://github.com/arzumanoff/youtube-downloader-chrome-extension/issues`
+- **GitHub:** `https://github.com/arzumanoff/LocalTube_Chrome-extension`
+- **Issues:** `https://github.com/arzumanoff/LocalTube_Chrome-extension/issues`
 
 ---
 
@@ -179,17 +179,17 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 Сайт не хранит файлы сам — все ссылки ведут на GitHub Releases.
 
-1. **Кнопка «Скачать»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension/releases/latest`
+1. **Кнопка «Скачать»** → `https://github.com/arzumanoff/LocalTube_Chrome-extension/releases/latest`
    - Автоматически отдаёт последний `LocalTube-Setup-*.exe`
-2. **Кнопка «GitHub»** → `https://github.com/arzumanoff/youtube-downloader-chrome-extension`
+2. **Кнопка «GitHub»** → `https://github.com/arzumanoff/LocalTube_Chrome-extension`
 3. **Версия и changelog** — можно тянуть через GitHub API:
-   - `GET https://api.github.com/repos/arzumanoff/youtube-downloader-chrome-extension/releases/latest`
+   - `GET https://api.github.com/repos/arzumanoff/LocalTube_Chrome-extension/releases/latest`
 
 ### Как сайт узнаёт последнюю версию
 
 ```javascript
 // Пример: получить ссылку на последний релиз
-fetch('https://api.github.com/repos/arzumanoff/youtube-downloader-chrome-extension/releases/latest')
+fetch('https://api.github.com/repos/arzumanoff/LocalTube_Chrome-extension/releases/latest')
   .then(r => r.json())
   .then(release => {
     const version = release.tag_name;

@@ -142,7 +142,7 @@ jobs:
             Chrome-расширение с Native Messaging движком для скачивания YouTube-видео в реальном качестве.
 
             ### Что нового
-            См. [CHANGELOG](https://github.com/arzumanoff/youtube-downloader-chrome-extension/commits/main)
+            См. [CHANGELOG](https://github.com/arzumanoff/LocalTube_Chrome-extension/commits/main)
 
             ### Установка
             1. Скачайте и запустите `LocalTube-Setup.exe`
@@ -155,7 +155,7 @@ jobs:
             - Google Chrome 120+
 
             ### Исходный код
-            https://github.com/arzumanoff/youtube-downloader-chrome-extension
+            https://github.com/arzumanoff/LocalTube_Chrome-extension
           files: release/installer/*.exe
           draft: false
           prerelease: false

@@ -3,7 +3,7 @@
 
 #define AppName     "LocalTube"
 #define AppPublisher "Arzumanoff"
-#define AppURL       "https://github.com/arzumanoff/youtube-downloader-chrome-extension"
+#define AppURL       "https://github.com/arzumanoff/LocalTube_Chrome-extension"
 #define EngineDir   "{localappdata}\LocalTubeEngine"
 #define ExtDir      "{localappdata}\LocalTube\extension"
 #define HostName    "com.arzumanoff.media_engine"
